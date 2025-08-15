@@ -1,0 +1,23 @@
+{
+  "name": "clearsked",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push"
+  },
+  "dependencies": {
+    "next": "^14.2.5",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "node-fetch": "^3.3.2",
+    "twilio": "^4.23.0",
+    "zipcodes": "^8.0.0",
+    "prisma": "^5.17.0",
+    "@prisma/client": "^5.17.0",
+    "pg": "^8.11.3"
+  }
+}
