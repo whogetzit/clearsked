@@ -1,8 +1,6 @@
 {
   "crons": [
-    {
-      "path": "/api/cron/send-daily",
-      "schedule": "0 5 * * *",
-    }
+    { "path": "/api/cron/send-daily", "schedule": "0 10 * * *" },  // 5am when CT = UTC-5
+    { "path": "/api/cron/send-daily", "schedule": "0 11 * * *" }   // 5am when CT = UTC-6
   ]
 }
