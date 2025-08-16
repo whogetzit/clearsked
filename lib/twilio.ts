@@ -1,0 +1,1 @@
+import Twilio from 'twilio'; const c=Twilio(process.env.TWILIO_SID!,process.env.TWILIO_AUTH!); export async function sendMMS(toE164:string, body:string, mediaUrl?:string){ const msg=await c.messages.create({from:process.env.TWILIO_FROM!, to:toE164, body, mediaUrl:mediaUrl?[mediaUrl]:undefined}); return msg.sid; }
