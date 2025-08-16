@@ -1,0 +1,15 @@
+datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+generator client { provider = "prisma-client-js" }
+model Subscriber {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  phoneE164    String   @unique
+  zip          String
+  latitude     Float
+  longitude    Float
+  durationMin  Int
+  active       Boolean  @default(true)
+  lastSentAt   DateTime?
+  prefs        Json?
+}
