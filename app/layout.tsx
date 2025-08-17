@@ -3,21 +3,14 @@ export const metadata = {
   metadataBase: new URL("https://clearsked.com"),
   title: "Best Time to Run Today (by ZIP) | ClearSked",
   description:
-    "Text alerts with the best hour to train based on your temperature, wind, UV, and air quality preferences. Free while in beta.",
+    "Daily text with your best hour to train based on your temperature, wind, UV, and AQI preferences. Free while in beta.",
   openGraph: {
     title: "ClearSked — Daily text: your best training window",
     description:
-      "Pick your ranges. We score every minute and text you the top window at 5am.",
+      "Pick your ranges. We score every minute (0–100) and text your top window each morning.",
     url: "https://clearsked.com",
     siteName: "ClearSked",
-    images: [
-      {
-        url: "/og.png", // (Optional) replace with your own OG image
-        width: 1200,
-        height: 630,
-        alt: "ClearSked — Your best hour today",
-      },
-    ],
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "ClearSked" }],
     locale: "en_US",
     type: "website",
   },
@@ -25,20 +18,13 @@ export const metadata = {
     card: "summary_large_image",
     title: "ClearSked — Daily text: your best training window",
     description:
-      "Pick your ranges. We score every minute and text you the top window at 5am.",
+      "Pick your ranges. We score every minute (0–100) and text your top window each morning.",
     images: ["/og.png"],
   },
-  alternates: {
-    canonical: "https://clearsked.com",
-  },
+  alternates: { canonical: "https://clearsked.com" },
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  // Minimal global styles (no Tailwind required)
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body
@@ -50,13 +36,7 @@ export default function RootLayout({
           background: "#fafafa",
         }}
       >
-        <div
-          style={{
-            maxWidth: 880,
-            margin: "0 auto",
-            padding: "32px 20px 80px",
-          }}
-        >
+        <div style={{ maxWidth: 880, margin: "0 auto", padding: "32px 20px 80px" }}>
           {children}
           <footer
             style={{
@@ -71,12 +51,8 @@ export default function RootLayout({
             }}
           >
             <span>© {new Date().getFullYear()} ClearSked</span>
-            <a href="/terms" style={{ color: "#2563eb" }}>
-              Terms
-            </a>
-            <a href="/privacy" style={{ color: "#2563eb" }}>
-              Privacy
-            </a>
+            <a href="/terms" style={{ color: "#2563eb" }}>Terms</a>
+            <a href="/privacy" style={{ color: "#2563eb" }}>Privacy</a>
           </footer>
         </div>
       </body>
