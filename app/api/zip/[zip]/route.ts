@@ -1,16 +1,28 @@
 // app/api/zip/[zip]/route.ts
 import { NextResponse } from "next/server";
-// CJS package works fine in a route file
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const zipcodes = require("zipcodes");
+import zipcodes from "zipcodes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(_: Request, { params }: { params: { zip: string } }) {
-  const zip = params.zip ?? "";
-  if (!/^\d{5}$/.test(zip)) return NextResponse.json({ message: "bad zip" }, { status: 400 });
-  const z = zipcodes.lookup(zip);
-  if (!z) return NextResponse.json({ message: "not found" }, { status: 404 });
-  return NextResponse.json({ city: z.city, state: z.state, latitude: z.latitude, longitude: z.longitude });
+export async function GET(
+  _req: Request,
+  { params }: { params: { zip: string } }
+) {
+  const z = params.zip;
+  if (!/^\d{5}$/.test(z)) {
+    return NextResponse.json({ message: "Invalid ZIP" }, { status: 400 });
+  }
+
+  const info = zipcodes.lookup(z);
+  if (!info) {
+    return NextResponse.json({ message: "ZIP not found" }, { status: 404 });
+  }
+
+  return NextResponse.json({
+    city: info.city,
+    state: info.state,
+    latitude: info.latitude,
+    longitude: info.longitude,
+  });
 }
