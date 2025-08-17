@@ -1,12 +1,100 @@
-export type MinutePoint={t:Date; tempF:number; humPct:number; windMph:number; uv:number; cloudPct:number; precipPct:number; aqi:number; daylight:number;};
-export const WEIGHTS={t:.28,h:.18,w:.23,u:.10,c:.05,p:.05,s:.01,aqi:.10};
-const clamp=(x:number,a:number,b:number)=>Math.max(a,Math.min(b,x));
-const lerp=(a:number,b:number,t:number)=>a+(b-a)*t;
-export function interpolateHourlyToMinutes(hours:any[]){const out:MinutePoint[]=[];if(!hours.length)return out;const start=new Date(new Date(hours[0].forecastStart).setMinutes(0,0,0));const end=new Date(new Date(hours[hours.length-1].forecastStart).setMinutes(59,0,0));for(let t=new Date(start);t<=end;t=new Date(t.getTime()+6e4)){const before=hours.slice().reverse().find(h=>new Date(h.forecastStart)<=t)||hours[0];const after=hours.find(h=>new Date(h.forecastStart)>=t)||hours[hours.length-1];const t0=new Date(before.forecastStart).getTime(),t1=new Date(after.forecastStart).getTime(),tt=t.getTime();const A=t1===t0?0:(tt-t0)/(t1-t0);const L=(b:number,a:number)=>b*(1-A)+a*A;out.push({t,tempF:L(before.temperature,after.temperature),humPct:L(before.humidity*100,after.humidity*100),windMph:L(before.windSpeed,after.windSpeed),uv:L(before.uvIndex,after.uvIndex),cloudPct:L(before.cloudCover*100,after.cloudCover*100),precipPct:L(before.precipitationChance*100,after.precipitationChance*100),aqi:L(before.airQualityIndex??35,after.airQualityIndex??35),daylight:1});}return out;}
-export function quickChartUrl(labels:string[], values:number[], title:string){const cfg={type:'line',data:{labels,datasets:[{label:'Comfort',data:values,fill:true}]},options:{plugins:{title:{display:true,text:title}},scales:{y:{min:0,max:100}}}};return `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(cfg))}&w=1200&h=600&bkg=white`;}
-export type Bands={green:[number,number]; yellow:[number,number]}; export type UserBands={temp:Bands;humidity:Bands;wind:Bands;uv:Bands;cloud:Bands;precip:Bands;aqi:Bands;};
-const DOMAIN={temp:[-10,110],humidity:[0,100],wind:[0,30],uv:[0,11],cloud:[0,100],precip:[0,100],aqi:[0,200]} as const;
-const within=([lo,hi]:[number,number],v:number)=>v>=lo&&v<=hi; const inv=(a:number,b:number,v:number)=>a===b?0:(v-a)/(b-a);
-function comp(metric:keyof UserBands,v:number,b:Bands){const[d0,d1]=(DOMAIN as any)[metric];const g=b.green,y=b.yellow;const gLo=Math.max(d0,Math.min(d1,Math.min(g[0],g[1]))),gHi=Math.max(d0,Math.min(d1,Math.max(g[0],g[1]))),yLo=Math.max(d0,Math.min(d1,Math.min(y[0],y[1]))),yHi=Math.max(d0,Math.min(d1,Math.max(y[0],y[1])));const gInLo=Math.max(gLo,yLo),gInHi=Math.min(gHi,yHi);if(within([gInLo,gInHi],v)){const t=inv(gInLo,gInHi,v);return Math.min(1,0.95+0.1*Math.min(t,1-t));}if(within([yLo,yHi],v)){const t=v<gInLo?inv(yLo,gInLo,v):inv(gInHi,yHi,v);return lerp(0.9,0.6,Math.max(0,Math.min(1,t)));}const t=v<yLo?inv(d0,yLo,v):inv(yHi,d1,v);return Math.max(0,0.5*(1-Math.max(0,Math.min(1,t))));}
-export function minuteScoreWithBands(m:MinutePoint, b:UserBands){return WEIGHTS.t*comp('temp',m.tempF,b.temp)+WEIGHTS.h*comp('humidity',m.humPct,b.humidity)+WEIGHTS.w*comp('wind',m.windMph,b.wind)+WEIGHTS.u*comp('uv',m.uv,b.uv)+WEIGHTS.c*comp('cloud',m.cloudPct,b.cloud)+WEIGHTS.p*comp('precip',m.precipPct,b.precip)+WEIGHTS.s*m.daylight+WEIGHTS.aqi*comp('aqi',m.aqi,b.aqi);}
-export function bestWindowWithBands(minutes:MinutePoint[], n:number, b:UserBands){const s=minutes.map(m=>minuteScoreWithBands(m,b));let bi=0,bv=-1e9;const pref=[0];for(const x of s)pref.push(pref[pref.length-1]+x);for(let i=0;i<=s.length-n;i++){const mean=(pref[i+n]-pref[i])/n;let pen=0;for(let j=i;j<i+n;j++)pen+=Math.max(0,.3-s[j]);const val=mean-.5*pen;if(val>bv){bv=val;bi=i;}}const start=minutes[bi].t,end=minutes[bi+n-1].t;const total=Object.values(WEIGHTS).reduce((a:any,c:any)=>a+c,0);const score=Math.max(0,Math.min(100,bv*100/total));return {index:bi,start,end,score};}
+// lib/scoring.ts
+export type MinuteConditions = {
+  time: Date;            // JS Date in UTC
+  tempF?: number;
+  windMph?: number;
+  uvIndex?: number;
+  aqi?: number;          // US AQI 0–500
+  humidityPct?: number;  // 0–100
+  cloudPct?: number;     // 0–100
+  precipChancePct?: number; // 0–100
+};
+
+export type Prefs = {
+  tempMin?: number;
+  tempMax?: number;
+  windMax?: number;
+  uvMax?: number;
+  aqiMax?: number;
+  humidityMax?: number;
+  cloudCoverMax?: number;
+  precipChanceMax?: number;
+};
+
+// Defaults used if a slider isn’t provided
+const DEFAULTS: Required<Prefs> = {
+  tempMin: 45, tempMax: 68,
+  windMax: 12,
+  uvMax: 6,
+  aqiMax: 100,
+  humidityMax: 85,
+  cloudCoverMax: 100,
+  precipChanceMax: 30,
+};
+
+// Penalty helpers: value inside limit => 1; outside => decays exponentially
+const expPenalty = (delta: number, k: number) => Math.exp(-Math.max(0, delta) * k);
+
+export function scoreMinute(c: MinuteConditions, prefsIn: Prefs = {}): number {
+  const p = { ...DEFAULTS, ...prefsIn };
+
+  // Temperature: no penalty inside band; outside penalize per °F
+  let tempScore = 1;
+  if (typeof c.tempF === "number") {
+    if (c.tempF < p.tempMin) tempScore = expPenalty(p.tempMin - c.tempF, 0.08);
+    else if (c.tempF > p.tempMax) tempScore = expPenalty(c.tempF - p.tempMax, 0.08);
+  }
+
+  // Wind (mph): higher than max => penalty
+  const windScore =
+    typeof c.windMph === "number" ? expPenalty((c.windMph ?? 0) - p.windMax, 0.12) : 1;
+
+  // UV: higher than max => penalty
+  const uvScore =
+    typeof c.uvIndex === "number" ? expPenalty((c.uvIndex ?? 0) - p.uvMax, 0.35) : 1;
+
+  // AQI: higher than max => penalty (AQI scale is wide, use small k)
+  const aqiScore =
+    typeof c.aqi === "number" ? expPenalty((c.aqi ?? 0) - p.aqiMax, 0.03) : 1;
+
+  // Humidity %: higher than max => penalty
+  const humidityScore =
+    typeof c.humidityPct === "number" ? expPenalty((c.humidityPct ?? 0) - p.humidityMax, 0.04) : 1;
+
+  // Cloud cover %: higher than max => penalty
+  const cloudScore =
+    typeof c.cloudPct === "number" ? expPenalty((c.cloudPct ?? 0) - p.cloudCoverMax, 0.03) : 1;
+
+  // Precip chance %: higher than max => penalty (steeper)
+  const precipScore =
+    typeof c.precipChancePct === "number" ? expPenalty((c.precipChancePct ?? 0) - p.precipChanceMax, 0.06) : 1;
+
+  // Weighted geometric mean keeps any “red” factor impactful but not binary
+  const weights = {
+    temp: 0.30,
+    wind: 0.18,
+    uv: 0.12,
+    aqi: 0.12,
+    humidity: 0.12,
+    cloud: 0.08,
+    precip: 0.08,
+  };
+
+  const wlog =
+    weights.temp * Math.log(tempScore || 1e-6) +
+    weights.wind * Math.log(windScore || 1e-6) +
+    weights.uv * Math.log(uvScore || 1e-6) +
+    weights.aqi * Math.log(aqiScore || 1e-6) +
+    weights.humidity * Math.log(humidityScore || 1e-6) +
+    weights.cloud * Math.log(cloudScore || 1e-6) +
+    weights.precip * Math.log(precipScore || 1e-6);
+
+  const geo = Math.exp(wlog);        // 0..1
+  return Math.round(geo * 100);      // 0..100
+}
+
+export function averageScore(points: MinuteConditions[], prefs: Prefs): number {
+  if (!points.length) return 0;
+  const sum = points.reduce((acc, m) => acc + scoreMinute(m, prefs), 0);
+  return Math.round(sum / points.length);
+}
