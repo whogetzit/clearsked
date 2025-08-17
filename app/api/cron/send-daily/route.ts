@@ -11,13 +11,13 @@ import { PrismaClient } from "@prisma/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// --- Prisma (safe at module scope) ---
+// Prisma (reuse in dev)
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 export const prisma =
   globalForPrisma.prisma ?? new PrismaClient({ log: ["error", "warn"] });
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
-// --- Twilio (lazy init at request time) ---
+// Twilio lazy init (avoid build-time env errors)
 let twilioClient: ReturnType<typeof Twilio> | null = null;
 function getTwilio() {
   if (!twilioClient) {
@@ -34,42 +34,22 @@ function getTwilioFrom() {
   return from;
 }
 
-const clamp = (x: number, lo: number, hi: number) =>
-  Math.max(lo, Math.min(hi, x));
-
-function localHourNow(tz: string): number {
-  const hStr = new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    hour12: false,
-    timeZone: tz,
-  }).format(new Date());
-  return Number(hStr);
-}
-function sameLocalDate(a: Date, b: Date, tz: string) {
+const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
+const localHourNow = (tz: string) =>
+  Number(new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: tz }).format(new Date()));
+const sameLocalDate = (a: Date, b: Date, tz: string) => {
   const fmt = (d: Date) =>
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(d);
+    new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
   return fmt(a) === fmt(b);
-}
-
-type RunOpts = {
-  testPhone?: string;
-  dry?: boolean;
-  debug?: boolean;
 };
+
+type RunOpts = { testPhone?: string; dry?: boolean; debug?: boolean };
 
 async function coreRun({ testPhone, dry, debug }: RunOpts) {
   const where: any = { active: true };
   if (testPhone) where.phoneE164 = testPhone;
 
-  const subs = await prisma.subscriber.findMany({
-    where,
-    take: testPhone ? 1 : undefined,
-  });
+  const subs = await prisma.subscriber.findMany({ where, take: testPhone ? 1 : undefined });
 
   const out: any = { sent: 0, matches: subs.length };
   const details: any[] = [];
@@ -77,19 +57,15 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
   for (const s of subs) {
     const d: any = { phone: s.phoneE164 };
     try {
-      const tz: string =
-        (s.prefs as any)?.timeZone || (s as any).timeZone || "America/Chicago";
+      const tz: string = (s.prefs as any)?.timeZone || (s as any).timeZone || "America/Chicago";
       const prefs: Prefs = (s.prefs as any) || {};
       const desiredDuration = clamp(s.durationMin || 60, 10, 240);
-      const deliveryHourLocal: number = Number(
-        (s.prefs as any)?.deliveryHourLocal ?? 5
-      );
+      const deliveryHourLocal: number = Number((s.prefs as any)?.deliveryHourLocal ?? 5);
 
       d.tz = tz;
       d.deliveryHourLocal = deliveryHourLocal;
       d.localHourNow = localHourNow(tz);
 
-      // Only gate by hour/dup when not testing a single phone
       if (!testPhone && localHourNow(tz) !== deliveryHourLocal) {
         d.skipped = "local hour does not match deliveryHourLocal";
         details.push(d);
@@ -101,7 +77,6 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
         continue;
       }
 
-      // Weather → timeline
       const wk = await fetchWeather(s.latitude, s.longitude, tz);
       const timeline = buildTimelineFromWeatherKit(wk, { stepMin: 1 });
       if (!timeline.length) {
@@ -110,16 +85,8 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
         continue;
       }
 
-      // Daylight-only
-      const { dawnUTC, duskUTC } = civilTwilightUTC(
-        s.latitude,
-        s.longitude,
-        tz,
-        new Date()
-      );
-      const daylight = timeline.filter(
-        (m: any) => m.time >= dawnUTC && m.time < duskUTC
-      );
+      const { dawnUTC, duskUTC } = civilTwilightUTC(s.latitude, s.longitude, tz, new Date());
+      const daylight = timeline.filter((m: any) => m.time >= dawnUTC && m.time < duskUTC);
       d.dawnLocal = formatLocalTime(dawnUTC, tz);
       d.duskLocal = formatLocalTime(duskUTC, tz);
 
@@ -133,7 +100,6 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
       d.requestedDuration = desiredDuration;
       d.usedDuration = winLen;
 
-      // Score & pick best window
       const scores = daylight.map((m: any) => scoreMinute(m, prefs));
       const ps = new Array(scores.length + 1).fill(0);
       for (let i = 0; i < scores.length; i++) ps[i + 1] = ps[i] + scores[i];
@@ -160,20 +126,13 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
 
       const parts: string[] = [];
       if (typeof mid.tempF === "number") parts.push(`${Math.round(mid.tempF)}°F`);
-      if (typeof mid.windMph === "number")
-        parts.push(`${Math.round(mid.windMph)} mph wind`);
+      if (typeof mid.windMph === "number") parts.push(`${Math.round(mid.windMph)} mph wind`);
       if (typeof mid.uvIndex === "number") parts.push(`UV ${Math.round(mid.uvIndex)}`);
       if (typeof mid.aqi === "number") parts.push(`AQI ${Math.round(mid.aqi)}`);
-      if (typeof mid.humidityPct === "number")
-        parts.push(`${Math.round(mid.humidityPct)}% RH`);
-      if (typeof mid.precipChancePct === "number")
-        parts.push(`${Math.round(mid.precipChancePct)}% precip`);
+      if (typeof mid.humidityPct === "number") parts.push(`${Math.round(mid.humidityPct)}% RH`);
+      if (typeof mid.precipChancePct === "number") parts.push(`${Math.round(mid.precipChancePct)}% precip`);
 
-      const durNote =
-        winLen < desiredDuration
-          ? ` (shortened to ${winLen} min due to limited daylight)`
-          : "";
-
+      const durNote = winLen < desiredDuration ? ` (shortened to ${winLen} min due to limited daylight)` : "";
       const body =
         `Civil dawn ${d.dawnLocal} · Civil dusk ${d.duskLocal}\n` +
         `Best ${winLen}min (daylight): ${startLocal}–${endLocal} (Score ${bestScore})${durNote}\n` +
@@ -190,20 +149,14 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
         continue;
       }
 
-      // Send SMS
       try {
-        await getTwilio().messages.create({
-          from: getTwilioFrom(),
-          to: s.phoneE164,
-          body,
-        });
+        await getTwilio().messages.create({ from: getTwilioFrom(), to: s.phoneE164, body });
       } catch (e: any) {
         d.error = `twilio: ${e?.message || "send failed"}`;
         details.push(d);
         continue;
       }
 
-      // Mark sent
       await prisma.subscriber.update({
         where: { phoneE164: s.phoneE164 },
         data: { lastSentAt: new Date() },
@@ -232,15 +185,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as {
-    phone?: string;
-    dry?: boolean;
-    debug?: boolean;
-  };
-  const result = await coreRun({
-    testPhone: body?.phone,
-    dry: !!body?.dry,
-    debug: !!body?.debug,
-  });
+  const body = (await req.json().catch(() => ({}))) as { phone?: string; dry?: boolean; debug?: boolean };
+  const result = await coreRun({ testPhone: body?.phone, dry: !!body?.dry, debug: !!body?.debug });
   return NextResponse.json({ ok: true, method: "POST", ...result });
 }
