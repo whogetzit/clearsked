@@ -30,6 +30,33 @@ type PreviewReq = {
 
 const roundInt = (x: number) => Math.round(x);
 
+function pickDaylightSlice(
+  timeline: MinutePoint[],
+  lat: number,
+  lon: number,
+  timeZone: string
+) {
+  // Try dawn/dusk for (a) "now", (b) first timeline minute's day, (c) +/- 1 day from that
+  const t0 = timeline[0]?.time ?? new Date();
+  const DAY = 24 * 60 * 60 * 1000;
+  const candidates = [new Date(), t0, new Date(t0.getTime() - DAY), new Date(t0.getTime() + DAY)];
+
+  for (const d of candidates) {
+    const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, d);
+    const daylight = timeline.filter((m) => m.time >= dawnUTC && m.time < duskUTC);
+    if (daylight.length > 0) {
+      return {
+        daylight,
+        dawnUTC,
+        duskUTC,
+      };
+    }
+  }
+  // If all else fails, return empty using today's dawn/dusk.
+  const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, new Date());
+  return { daylight: [] as MinutePoint[], dawnUTC, duskUTC };
+}
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as PreviewReq;
@@ -61,9 +88,8 @@ export async function POST(req: Request) {
     }
 
     const timeline: MinutePoint[] = buildTimelineFromWeatherKit(wk, { stepMin: 1 });
-    const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, new Date());
-
     if (!timeline.length) {
+      const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, new Date());
       return NextResponse.json({
         empty: true,
         message: "No weather timeline data returned.",
@@ -74,11 +100,15 @@ export async function POST(req: Request) {
       });
     }
 
-    const daylight = timeline.filter((m) => m.time >= dawnUTC && m.time < duskUTC);
+    // Align dawn/dusk to the timeline day (with ±1 day fallback)
+    const { daylight, dawnUTC, duskUTC } = pickDaylightSlice(timeline, lat, lon, timeZone);
+
     if (!daylight.length) {
       return NextResponse.json({
         empty: true,
-        message: "No daylight minutes available for today at that location.",
+        message: "No daylight minutes available (timeline/day misalignment).",
+        timelineStartUTC: timeline[0].time.toISOString(),
+        timelineEndUTC: timeline[timeline.length - 1].time.toISOString(),
         dawnUTC: dawnUTC.toISOString(),
         duskUTC: duskUTC.toISOString(),
         dawnLocal: formatLocalTime(dawnUTC, timeZone),
@@ -124,6 +154,8 @@ export async function POST(req: Request) {
       duskLocal: formatLocalTime(duskUTC, timeZone),
       startLocal: formatLocalTime(bestStartUTC, timeZone),
       endLocal: formatLocalTime(bestEndUTC, timeZone),
+      timelineStartUTC: timeline[0].time.toISOString(),
+      timelineEndUTC: timeline[timeline.length - 1].time.toISOString(),
       series,
       usedDurationMin: winLen,
     });
