@@ -1,24 +1,15 @@
 // pages/api/signup.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import { prisma } from "@/server/db";
-
-// zipcodes is CJS; import like this in TS
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const zipcodes = require("zipcodes");
 
-type Prefs = {
-  tempMin?: number;
-  tempMax?: number;
-  windMax?: number;
-  uvMax?: number;
-  aqiMax?: number;
-};
+type Prefs = { tempMin?: number; tempMax?: number; windMax?: number; uvMax?: number; aqiMax?: number; };
 
 function toInt(v: unknown, fallback: number): number {
   const n = typeof v === "string" ? Number(v) : (v as number);
   return Number.isFinite(n) ? Math.round(n as number) : fallback;
 }
-
 function normalizeE164US(input: string): string | null {
   const digits = (input || "").replace(/\D/g, "");
   if (digits.length === 10) return `+1${digits}`;
@@ -32,6 +23,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (req.method !== "POST") {
       res.setHeader("Allow", ["POST"]);
       return res.status(405).json({ message: "Method Not Allowed" });
+    }
+
+    // simple bot traps
+    const hp = (req.body?.hp ?? "").toString();
+    if (hp.trim()) return res.status(400).json({ message: "Bad request" });
+    const latencySec = Number(req.headers["x-form-latency"]);
+    if (Number.isFinite(latencySec) && latencySec < 1) {
+      // too fast; likely not human
+      return res.status(400).json({ message: "Please try again" });
     }
 
     const {
@@ -52,25 +52,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       timeZone?: string;
     };
 
-    // Basic validation
-    if (!zip || !/^\d{5}$/.test(zip)) {
-      return res.status(400).json({ message: "Invalid ZIP" });
-    }
+    if (!zip || !/^\d{5}$/.test(zip)) return res.status(400).json({ message: "Invalid ZIP" });
     const phoneE164 = phone ? normalizeE164US(phone) : null;
-    if (!phoneE164) {
-      return res.status(400).json({ message: "Invalid phone" });
-    }
+    if (!phoneE164) return res.status(400).json({ message: "Invalid phone" });
 
-    // ZIP -> lat/lon
     const z = zipcodes.lookup(zip);
     if (!z || typeof z.latitude !== "number" || typeof z.longitude !== "number") {
       return res.status(400).json({ message: "ZIP not found" });
     }
 
-    // Duration: prefer durationMin, fallback to duration, default 60
     const durationInt = toInt(dm1 ?? dm2, 60);
 
-    // Clean prefs (optional) and tuck delivery/timeZone inside prefs for now
     const prefs: Prefs & { deliveryHourLocal?: number; timeZone?: string } = {
       ...(rawPrefs ?? {}),
       ...(typeof deliveryHourLocal === "number" ? { deliveryHourLocal } : {}),
