@@ -11,21 +11,37 @@ import { PrismaClient } from "@prisma/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const twilioSid = process.env.TWILIO_ACCOUNT_SID!;
-const twilioToken = process.env.TWILIO_AUTH_TOKEN!;
-const twilioFrom = process.env.TWILIO_FROM!;
-const client = Twilio(twilioSid, twilioToken);
-
-// prisma reuse in dev
+// --- Prisma (safe at module scope; no network until used) ---
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 export const prisma =
   globalForPrisma.prisma ?? new PrismaClient({ log: ["error", "warn"] });
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
-const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
+// --- Twilio: LAZY init so it doesn't run during build ---
+let twilioClient: ReturnType<typeof Twilio> | null = null;
+function getTwilio() {
+  if (!twilioClient) {
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const token = process.env.TWILIO_AUTH_TOKEN;
+    if (!sid || !token) {
+      throw new Error(
+        "Twilio credentials missing. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN."
+      );
+    }
+    twilioClient = Twilio(sid, token);
+  }
+  return twilioClient;
+}
+function getTwilioFrom() {
+  const from = process.env.TWILIO_FROM;
+  if (!from) throw new Error("TWILIO_FROM is missing.");
+  return from;
+}
+
+const clamp = (x: number, lo: number, hi: number) =>
+  Math.max(lo, Math.min(hi, x));
 
 function localHourNow(tz: string): number {
-  // "0".."23"
   const hStr = new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     hour12: false,
@@ -33,7 +49,6 @@ function localHourNow(tz: string): number {
   }).format(new Date());
   return Number(hStr);
 }
-
 function sameLocalDate(a: Date, b: Date, tz: string) {
   const fmt = (d: Date) =>
     new Intl.DateTimeFormat("en-US", {
@@ -63,25 +78,31 @@ async function coreRun(testPhone?: string) {
       const prefs: Prefs = (s.prefs as any) || {};
       const desiredDuration = clamp(s.durationMin || 60, 10, 240);
 
-      // Respect per-user delivery hour (saved inside prefs to avoid schema changes)
-      const deliveryHourLocal: number =
-        Number((s.prefs as any)?.deliveryHourLocal ?? 5);
+      // per-user delivery hour stored in prefs
+      const deliveryHourLocal: number = Number(
+        (s.prefs as any)?.deliveryHourLocal ?? 5
+      );
 
-      // Only send when the subscriber's local hour matches
+      // Only send at the user’s chosen local hour (unless testing a single number)
       if (localHourNow(tz) !== deliveryHourLocal && !testPhone) {
         continue;
       }
 
-      // Avoid duplicate sends if already sent "today" in their timezone
-      if (s.lastSentAt && sameLocalDate(new Date(s.lastSentAt), new Date(), tz) && !testPhone) {
+      // Don’t double-send if already sent “today” in their timezone
+      if (
+        s.lastSentAt &&
+        sameLocalDate(new Date(s.lastSentAt), new Date(), tz) &&
+        !testPhone
+      ) {
         continue;
       }
 
-      // Build 1-min timeline for today
+      // Weather → timeline
       const wk = await fetchWeather(s.latitude, s.longitude, tz);
       const timeline = buildTimelineFromWeatherKit(wk, { stepMin: 1 });
       if (!timeline.length) continue;
 
+      // Daylight window
       const { dawnUTC, duskUTC } = civilTwilightUTC(
         s.latitude,
         s.longitude,
@@ -96,7 +117,10 @@ async function coreRun(testPhone?: string) {
         continue;
       }
 
+      // Shorten if daylight < desired duration
       const winLen = Math.min(desiredDuration, daylight.length);
+
+      // Score & pick best window inside daylight
       const scores = daylight.map((m: any) => scoreMinute(m, prefs));
       const ps = new Array(scores.length + 1).fill(0);
       for (let i = 0; i < scores.length; i++) ps[i + 1] = ps[i] + scores[i];
@@ -125,21 +149,28 @@ async function coreRun(testPhone?: string) {
 
       const parts: string[] = [];
       if (typeof mid.tempF === "number") parts.push(`${Math.round(mid.tempF)}°F`);
-      if (typeof mid.windMph === "number") parts.push(`${Math.round(mid.windMph)} mph wind`);
+      if (typeof mid.windMph === "number")
+        parts.push(`${Math.round(mid.windMph)} mph wind`);
       if (typeof mid.uvIndex === "number") parts.push(`UV ${Math.round(mid.uvIndex)}`);
       if (typeof mid.aqi === "number") parts.push(`AQI ${Math.round(mid.aqi)}`);
-      if (typeof mid.humidityPct === "number") parts.push(`${Math.round(mid.humidityPct)}% RH`);
-      if (typeof mid.precipChancePct === "number") parts.push(`${Math.round(mid.precipChancePct)}% precip`);
+      if (typeof mid.humidityPct === "number")
+        parts.push(`${Math.round(mid.humidityPct)}% RH`);
+      if (typeof mid.precipChancePct === "number")
+        parts.push(`${Math.round(mid.precipChancePct)}% precip`);
 
       const durNote =
-        winLen < desiredDuration ? ` (shortened to ${winLen} min due to limited daylight)` : "";
+        winLen < desiredDuration
+          ? ` (shortened to ${winLen} min due to limited daylight)`
+          : "";
+
       const body =
         `Civil dawn ${dawnLocal} · Civil dusk ${duskLocal}\n` +
         `Best ${winLen}min (daylight): ${startLocal}–${endLocal} (Score ${bestScore})${durNote}\n` +
         `${parts.join(" · ")}\n— ClearSked (reply STOP to cancel)`;
 
-      await client.messages.create({
-        from: twilioFrom,
+      // --- Twilio send (client created lazily now) ---
+      await getTwilio().messages.create({
+        from: getTwilioFrom(),
         to: s.phoneE164,
         body,
       });
@@ -159,7 +190,7 @@ async function coreRun(testPhone?: string) {
 }
 
 export async function GET(req: Request) {
-  // For testing you can hit: /api/cron/send-daily?phone=+15551234567
+  // /api/cron/send-daily?phone=+15551234567 to test a single number
   const url = new URL(req.url);
   const phone = url.searchParams.get("phone") || undefined;
   const result = await coreRun(phone);
