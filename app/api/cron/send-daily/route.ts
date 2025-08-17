@@ -11,30 +11,26 @@ import { PrismaClient } from "@prisma/client";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// --- Prisma (safe at module scope; no network until used) ---
+// --- Prisma (safe at module scope) ---
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 export const prisma =
   globalForPrisma.prisma ?? new PrismaClient({ log: ["error", "warn"] });
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
-// --- Twilio: LAZY init so it doesn't run during build ---
+// --- Twilio (lazy init at request time) ---
 let twilioClient: ReturnType<typeof Twilio> | null = null;
 function getTwilio() {
   if (!twilioClient) {
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const token = process.env.TWILIO_AUTH_TOKEN;
-    if (!sid || !token) {
-      throw new Error(
-        "Twilio credentials missing. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN."
-      );
-    }
+    if (!sid || !token) throw new Error("Twilio credentials missing");
     twilioClient = Twilio(sid, token);
   }
   return twilioClient;
 }
 function getTwilioFrom() {
   const from = process.env.TWILIO_FROM;
-  if (!from) throw new Error("TWILIO_FROM is missing.");
+  if (!from) throw new Error("TWILIO_FROM is missing");
   return from;
 }
 
@@ -60,7 +56,13 @@ function sameLocalDate(a: Date, b: Date, tz: string) {
   return fmt(a) === fmt(b);
 }
 
-async function coreRun(testPhone?: string) {
+type RunOpts = {
+  testPhone?: string;
+  dry?: boolean;
+  debug?: boolean;
+};
+
+async function coreRun({ testPhone, dry, debug }: RunOpts) {
   const where: any = { active: true };
   if (testPhone) where.phoneE164 = testPhone;
 
@@ -69,40 +71,46 @@ async function coreRun(testPhone?: string) {
     take: testPhone ? 1 : undefined,
   });
 
-  let sent = 0;
+  const out: any = { sent: 0, matches: subs.length };
+  const details: any[] = [];
 
   for (const s of subs) {
+    const d: any = { phone: s.phoneE164 };
     try {
       const tz: string =
         (s.prefs as any)?.timeZone || (s as any).timeZone || "America/Chicago";
       const prefs: Prefs = (s.prefs as any) || {};
       const desiredDuration = clamp(s.durationMin || 60, 10, 240);
-
-      // per-user delivery hour stored in prefs
       const deliveryHourLocal: number = Number(
         (s.prefs as any)?.deliveryHourLocal ?? 5
       );
 
-      // Only send at the user’s chosen local hour (unless testing a single number)
-      if (localHourNow(tz) !== deliveryHourLocal && !testPhone) {
+      d.tz = tz;
+      d.deliveryHourLocal = deliveryHourLocal;
+      d.localHourNow = localHourNow(tz);
+
+      // Only gate by hour/dup when not testing a single phone
+      if (!testPhone && localHourNow(tz) !== deliveryHourLocal) {
+        d.skipped = "local hour does not match deliveryHourLocal";
+        details.push(d);
         continue;
       }
-
-      // Don’t double-send if already sent “today” in their timezone
-      if (
-        s.lastSentAt &&
-        sameLocalDate(new Date(s.lastSentAt), new Date(), tz) &&
-        !testPhone
-      ) {
+      if (!testPhone && s.lastSentAt && sameLocalDate(new Date(s.lastSentAt), new Date(), tz)) {
+        d.skipped = "already sent today";
+        details.push(d);
         continue;
       }
 
       // Weather → timeline
       const wk = await fetchWeather(s.latitude, s.longitude, tz);
       const timeline = buildTimelineFromWeatherKit(wk, { stepMin: 1 });
-      if (!timeline.length) continue;
+      if (!timeline.length) {
+        d.skipped = "no timeline data";
+        details.push(d);
+        continue;
+      }
 
-      // Daylight window
+      // Daylight-only
       const { dawnUTC, duskUTC } = civilTwilightUTC(
         s.latitude,
         s.longitude,
@@ -112,15 +120,20 @@ async function coreRun(testPhone?: string) {
       const daylight = timeline.filter(
         (m: any) => m.time >= dawnUTC && m.time < duskUTC
       );
+      d.dawnLocal = formatLocalTime(dawnUTC, tz);
+      d.duskLocal = formatLocalTime(duskUTC, tz);
+
       if (!daylight.length) {
-        console.log(`[${s.phoneE164}] No daylight minutes today.`);
+        d.skipped = "no daylight minutes";
+        details.push(d);
         continue;
       }
 
-      // Shorten if daylight < desired duration
       const winLen = Math.min(desiredDuration, daylight.length);
+      d.requestedDuration = desiredDuration;
+      d.usedDuration = winLen;
 
-      // Score & pick best window inside daylight
+      // Score & pick best window
       const scores = daylight.map((m: any) => scoreMinute(m, prefs));
       const ps = new Array(scores.length + 1).fill(0);
       for (let i = 0; i < scores.length; i++) ps[i + 1] = ps[i] + scores[i];
@@ -142,8 +155,6 @@ async function coreRun(testPhone?: string) {
       const midIdx = bestStartIdx + Math.floor(winLen / 2);
       const mid = daylight[Math.min(midIdx, daylight.length - 1)] as any;
 
-      const dawnLocal = formatLocalTime(dawnUTC, tz);
-      const duskLocal = formatLocalTime(duskUTC, tz);
       const startLocal = formatLocalTime(bestStart, tz);
       const endLocal = formatLocalTime(bestEnd, tz);
 
@@ -164,41 +175,72 @@ async function coreRun(testPhone?: string) {
           : "";
 
       const body =
-        `Civil dawn ${dawnLocal} · Civil dusk ${duskLocal}\n` +
+        `Civil dawn ${d.dawnLocal} · Civil dusk ${d.duskLocal}\n` +
         `Best ${winLen}min (daylight): ${startLocal}–${endLocal} (Score ${bestScore})${durNote}\n` +
         `${parts.join(" · ")}\n— ClearSked (reply STOP to cancel)`;
 
-      // --- Twilio send (client created lazily now) ---
-      await getTwilio().messages.create({
-        from: getTwilioFrom(),
-        to: s.phoneE164,
-        body,
-      });
+      d.startLocal = startLocal;
+      d.endLocal = endLocal;
+      d.bestScore = bestScore;
+      d.smsPreview = body;
 
+      if (dry) {
+        d.skipped = "dry-run";
+        details.push(d);
+        continue;
+      }
+
+      // Send SMS
+      try {
+        await getTwilio().messages.create({
+          from: getTwilioFrom(),
+          to: s.phoneE164,
+          body,
+        });
+      } catch (e: any) {
+        d.error = `twilio: ${e?.message || "send failed"}`;
+        details.push(d);
+        continue;
+      }
+
+      // Mark sent
       await prisma.subscriber.update({
         where: { phoneE164: s.phoneE164 },
         data: { lastSentAt: new Date() },
       });
 
-      sent++;
-    } catch (err) {
-      console.error("send-daily(sub):", s.phoneE164, err);
+      d.sent = true;
+      details.push(d);
+      out.sent++;
+    } catch (err: any) {
+      d.error = err?.message || "unknown";
+      details.push(d);
     }
   }
 
-  return { sent };
+  if (debug) out.details = details;
+  return out;
 }
 
 export async function GET(req: Request) {
-  // /api/cron/send-daily?phone=+15551234567 to test a single number
   const url = new URL(req.url);
   const phone = url.searchParams.get("phone") || undefined;
-  const result = await coreRun(phone);
-  return NextResponse.json({ ok: true, ...result, method: "GET" });
+  const dry = url.searchParams.get("dry") === "1" || url.searchParams.get("dry") === "true";
+  const debug = url.searchParams.get("debug") === "1" || url.searchParams.get("debug") === "true";
+  const result = await coreRun({ testPhone: phone, dry, debug });
+  return NextResponse.json({ ok: true, method: "GET", ...result });
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { phone?: string };
-  const result = await coreRun(body?.phone);
-  return NextResponse.json({ ok: true, ...result, method: "POST" });
+  const body = (await req.json().catch(() => ({}))) as {
+    phone?: string;
+    dry?: boolean;
+    debug?: boolean;
+  };
+  const result = await coreRun({
+    testPhone: body?.phone,
+    dry: !!body?.dry,
+    debug: !!body?.debug,
+  });
+  return NextResponse.json({ ok: true, method: "POST", ...result });
 }
