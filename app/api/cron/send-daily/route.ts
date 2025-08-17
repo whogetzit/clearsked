@@ -43,7 +43,41 @@ const sameLocalDate = (a: Date, b: Date, tz: string) => {
   return fmt(a) === fmt(b);
 };
 
-// Choose daylight slice aligned to timeline's day, with ±1 day fallback
+// --- Local-minute-of-day helpers (robust across UTC day wraps) ---
+function minutesOfDay(date: Date, timeZone: string): number {
+  // 0..1439 in given tz
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const m = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  return h * 60 + m;
+}
+
+function daylightByLocalMinutes(
+  timeline: { time: Date }[],
+  timeZone: string,
+  dawnUTC: Date,
+  duskUTC: Date
+) {
+  const dawnM = minutesOfDay(dawnUTC, timeZone);
+  const duskM = minutesOfDay(duskUTC, timeZone);
+
+  // Handle dusk past midnight (wrap)
+  const isWrapped = duskM <= dawnM;
+
+  const slice = timeline.filter((pt) => {
+    const mm = minutesOfDay(pt.time, timeZone);
+    return isWrapped ? mm >= dawnM || mm < duskM : mm >= dawnM && mm < duskM;
+  });
+
+  return { slice, dawnM, duskM, isWrapped };
+}
+
+// Choose daylight slice aligned to the timeline’s day, but compare in local minutes
 function pickDaylightSlice(
   timeline: { time: Date }[],
   lat: number,
@@ -56,9 +90,11 @@ function pickDaylightSlice(
 
   for (const d of candidates) {
     const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, d);
-    const daylight = timeline.filter((m) => m.time >= dawnUTC && m.time < duskUTC);
-    if (daylight.length > 0) return { daylight, dawnUTC, duskUTC };
+    const { slice } = daylightByLocalMinutes(timeline, timeZone, dawnUTC, duskUTC);
+    if (slice.length > 0) return { daylight: slice, dawnUTC, duskUTC };
   }
+
+  // Fallback to "today" if all else fails, even if empty (for debug)
   const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, new Date());
   return { daylight: [] as { time: Date }[], dawnUTC, duskUTC };
 }
@@ -105,15 +141,16 @@ async function coreRun({ testPhone, dry, debug, force }: RunOpts) {
         continue;
       }
 
-      // Align dawn/dusk with the timeline’s day
-      const { daylight, dawnUTC, duskUTC } = pickDaylightSlice(timeline, s.latitude, s.longitude, tz);
+      // Align dawn/dusk with the timeline’s day; filter using local-minute-of-day
+      const picked = pickDaylightSlice(timeline, s.latitude, s.longitude, tz);
       d.timelineStartUTC = timeline[0].time.toISOString();
       d.timelineEndUTC = timeline[timeline.length - 1].time.toISOString();
-      d.dawnLocal = formatLocalTime(dawnUTC, tz);
-      d.duskLocal = formatLocalTime(duskUTC, tz);
+      d.dawnLocal = formatLocalTime(picked.dawnUTC, tz);
+      d.duskLocal = formatLocalTime(picked.duskUTC, tz);
 
+      const daylight = picked.daylight;
       if (!daylight.length) {
-        d.skipped = "no daylight minutes (timeline/day misalignment)";
+        d.skipped = "no daylight minutes (local-minute filter)";
         details.push(d);
         continue;
       }
