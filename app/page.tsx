@@ -230,9 +230,9 @@ type Prefs = {
   windMax: number;
   uvMax: number;
   aqiMax: number;
-  humidityMax: number; // NEW
-  cloudCoverMax: number; // NEW
-  precipChanceMax: number; // NEW
+  humidityMax: number;
+  cloudCoverMax: number;
+  precipChanceMax: number;
 };
 
 type SportPresetKey = "running" | "cycling" | "tennis" | "kids";
@@ -322,6 +322,20 @@ function toE164US(d: string): string | null {
   if (x.length === 11 && x.startsWith("1")) return `+${x}`;
   if (d.startsWith("+") && x.length >= 10) return d;
   return null;
+}
+
+// simple local time formatter
+function fmtLocal(epoch: number, timeZone: string) {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(epoch));
+  } catch {
+    const d = new Date(epoch);
+    return d.toISOString().slice(11, 16);
+  }
 }
 
 /* ------------------------------- small UI bits ------------------------------ */
@@ -550,7 +564,7 @@ export default function Page() {
     }
   }
 
-  // Fetch live preview (civil dawn/dusk + best minute window) whenever inputs ready
+  // Fetch live preview whenever inputs ready
   useEffect(() => {
     const ready = loc && isZipValid(zip) && tz && duration && prefs;
     if (!ready) return;
@@ -584,6 +598,100 @@ export default function Page() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loc, zip, tz, duration, JSON.stringify(prefs)]);
+
+  // —— NEW: enforce daylight-only best window on the client if needed ——
+  const daylightBest = useMemo(() => {
+    if (!preview || !preview.series || !preview.dawnUTC || !preview.duskUTC)
+      return null;
+
+    const dawnMs = Date.parse(preview.dawnUTC);
+    const duskMs = Date.parse(preview.duskUTC);
+
+    const inside = (ms: number) => ms >= dawnMs && ms <= duskMs;
+
+    const apiStart = preview.bestStartUTC ? Date.parse(preview.bestStartUTC) : undefined;
+    const apiEnd = preview.bestEndUTC ? Date.parse(preview.bestEndUTC) : undefined;
+
+    // If API window is already fully within civil daylight, keep it (minute-precise)
+    if (
+      typeof apiStart === "number" &&
+      typeof apiEnd === "number" &&
+      inside(apiStart) &&
+      inside(apiEnd)
+    ) {
+      return {
+        startUTC: apiStart,
+        endUTC: apiEnd,
+        score: preview.bestScore,
+      };
+    }
+
+    // Otherwise, recompute using 5-minute series, fully constrained to [dawn, dusk]
+    const series: ChartPoint[] = preview.series;
+    const winPts = Math.max(1, Math.round(duration / 5)); // 60min -> 12 points
+
+    // Restrict candidate starting indices so the entire window ends before dusk
+    const startIdx = series.findIndex((p) => p.tUTC >= dawnMs);
+    const endIdxFirstGE = series.findIndex((p) => p.tUTC >= duskMs);
+    const endIdx = endIdxFirstGE >= 0 ? endIdxFirstGE : series.length;
+    const sub = series.slice(startIdx >= 0 ? startIdx : 0, endIdx);
+
+    if (sub.length < winPts) {
+      // If somehow daylight is shorter than duration at this resolution, just fail gracefully
+      return null;
+    }
+
+    // Sliding average to find the max window
+    const scores = sub.map((p) => p.score);
+    const ps = new Array(scores.length + 1).fill(0);
+    for (let i = 0; i < scores.length; i++) ps[i + 1] = ps[i] + scores[i];
+
+    let bestI = 0;
+    let bestAvg = -1;
+    for (let i = 0; i + winPts <= scores.length; i++) {
+      const avg = (ps[i + winPts] - ps[i]) / winPts;
+      if (avg > bestAvg) {
+        bestAvg = avg;
+        bestI = i;
+      }
+    }
+
+    const bestStartEpoch = sub[bestI].tUTC;
+    const bestEndEpoch =
+      sub[Math.min(bestI + winPts - 1, sub.length - 1)].tUTC + 5 * 60 * 1000;
+
+    return {
+      startUTC: bestStartEpoch,
+      endUTC: bestEndEpoch,
+      score: Math.round(bestAvg),
+    };
+  }, [preview, duration]);
+
+  // Effective values we will render (always daylight-only if available)
+  const effective = useMemo(() => {
+    if (!preview) return null;
+    const dawn = preview.dawnUTC;
+    const dusk = preview.duskUTC;
+
+    const startUTC =
+      daylightBest?.startUTC ?? (preview.bestStartUTC ? Date.parse(preview.bestStartUTC) : undefined);
+    const endUTC =
+      daylightBest?.endUTC ?? (preview.bestEndUTC ? Date.parse(preview.bestEndUTC) : undefined);
+    const score = daylightBest?.score ?? preview.bestScore;
+
+    return {
+      dawn,
+      dusk,
+      startUTC,
+      endUTC,
+      score,
+      dawnLocal: preview.dawnLocal,
+      duskLocal: preview.duskLocal,
+      startLocal:
+        typeof startUTC === "number" ? fmtLocal(startUTC, tz) : undefined,
+      endLocal: typeof endUTC === "number" ? fmtLocal(endUTC, tz) : undefined,
+    };
+  }, [preview, daylightBest, tz]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -884,7 +992,7 @@ export default function Page() {
                   value={prefs.aqiMax}
                   onChange={(v) => setPrefs((p) => ({ ...p, aqiMax: v }))}
                 />
-                {/* NEW: Humidity */}
+                {/* Humidity */}
                 <RangeField
                   label="Max humidity"
                   min={0}
@@ -894,7 +1002,7 @@ export default function Page() {
                   onChange={(v) => setPrefs((p) => ({ ...p, humidityMax: v }))}
                   suffix="%"
                 />
-                {/* NEW: Cloud cover */}
+                {/* Cloud cover */}
                 <RangeField
                   label="Max cloud cover"
                   min={0}
@@ -904,7 +1012,7 @@ export default function Page() {
                   onChange={(v) => setPrefs((p) => ({ ...p, cloudCoverMax: v }))}
                   suffix="%"
                 />
-                {/* NEW: Precip chance */}
+                {/* Precip chance */}
                 <RangeField
                   label="Max precipitation chance"
                   min={0}
@@ -1019,7 +1127,7 @@ export default function Page() {
             <h2 style={{ margin: 0, fontSize: 20 }}>Preview for your settings</h2>
             <p style={{ margin: "8px 0 0", color: "#475569" }}>
               Dashed lines show <strong>civil dawn &amp; dusk</strong>. Green bar = your best{" "}
-              <strong>{duration} min</strong> window (minute-precise).
+              <strong>{duration} min</strong> window (always inside daylight).
             </p>
           </div>
 
@@ -1035,17 +1143,17 @@ export default function Page() {
             <div style={{ color: "#b91c1c" }}>Preview error: {previewError}</div>
           )}
 
-          {preview && !preview.empty && (
+          {preview && !preview.empty && effective && effective.startUTC && effective.endUTC && (
             <PreviewChart
               timeZone={tz}
               series={preview.series}
-              dawnUTC={preview.dawnUTC}
-              duskUTC={preview.duskUTC}
-              bestStartUTC={preview.bestStartUTC}
-              bestEndUTC={preview.bestEndUTC}
-              dawnLabel={preview.dawnLocal}
-              duskLabel={preview.duskLocal}
-              bestLabel={`Best ${duration}min: ${preview.startLocal}–${preview.endLocal} (Score ${preview.bestScore})`}
+              dawnUTC={effective.dawn}
+              duskUTC={effective.dusk}
+              bestStartUTC={new Date(effective.startUTC).toISOString()}
+              bestEndUTC={new Date(effective.endUTC).toISOString()}
+              dawnLabel={effective.dawnLocal}
+              duskLabel={effective.duskLocal}
+              bestLabel={`Best ${duration}min: ${effective.startLocal}–${effective.endLocal} (Score ${effective.score})`}
             />
           )}
         </div>
