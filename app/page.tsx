@@ -3,16 +3,236 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 
-/* ----------------------------- helpers/types ----------------------------- */
+/* =============================================================================
+   PreviewChart (inline component)
+============================================================================= */
+type ChartPoint = { tUTC: number; score: number };
+
+function PreviewChart(props: {
+  timeZone: string;
+  series: ChartPoint[];
+  dawnUTC: string;
+  duskUTC: string;
+  bestStartUTC?: string;
+  bestEndUTC?: string;
+  dawnLabel: string;
+  duskLabel: string;
+  bestLabel: string; // e.g., "Best 60min: 5:42–6:42 (Score 84)"
+}) {
+  const {
+    timeZone,
+    series,
+    dawnUTC,
+    duskUTC,
+    bestStartUTC,
+    bestEndUTC,
+    dawnLabel,
+    duskLabel,
+    bestLabel,
+  } = props;
+
+  // convert UTC epoch -> minutes after local midnight
+  const toLocalMinutes = React.useCallback(
+    (epoch: number) => {
+      const dt = new Date(epoch);
+      const h = Number(
+        new Intl.DateTimeFormat("en-US", {
+          hour: "numeric",
+          hour12: false,
+          timeZone,
+        }).format(dt)
+      );
+      const m = Number(
+        new Intl.DateTimeFormat("en-US", {
+          minute: "2-digit",
+          timeZone,
+        }).format(dt)
+      );
+      return h * 60 + m; // 0..1439
+    },
+    [timeZone]
+  );
+
+  const width = 720,
+    height = 220,
+    pad = 28;
+  const xFromMin = (mins: number) => pad + (mins / 1440) * (width - pad * 2);
+  const yFromScore = (s: number) =>
+    height - pad - (s / 100) * (height - pad * 2);
+
+  const polyPoints = React.useMemo(
+    () =>
+      series
+        .map(
+          (p) => `${xFromMin(toLocalMinutes(p.tUTC))},${yFromScore(p.score)}`
+        )
+        .join(" "),
+    [series, toLocalMinutes]
+  );
+
+  const dawnX = xFromMin(toLocalMinutes(Date.parse(dawnUTC)));
+  const duskX = xFromMin(toLocalMinutes(Date.parse(duskUTC)));
+  const bestStartX =
+    bestStartUTC !== undefined
+      ? xFromMin(toLocalMinutes(Date.parse(bestStartUTC)))
+      : undefined;
+  const bestEndX =
+    bestEndUTC !== undefined
+      ? xFromMin(toLocalMinutes(Date.parse(bestEndUTC)))
+      : undefined;
+
+  return (
+    <div
+      style={{
+        border: "1px solid #e5e7eb",
+        borderRadius: 12,
+        padding: 12,
+        background: "#fff",
+      }}
+    >
+      <svg width={width} height={height} role="img" aria-label="Comfort chart">
+        {/* background bands */}
+        <rect x={0} y={0} width={width} height={height} fill="#fff" />
+        <rect
+          x={pad}
+          y={pad}
+          width={width - pad * 2}
+          height={(height - pad * 2) / 3}
+          fill="#dcfce7"
+          opacity={0.35}
+        />
+        <rect
+          x={pad}
+          y={pad + (height - pad * 2) / 3}
+          width={width - pad * 2}
+          height={(height - pad * 2) / 3}
+          fill="#fef3c7"
+          opacity={0.35}
+        />
+        <rect
+          x={pad}
+          y={pad + ((height - pad * 2) / 3) * 2}
+          width={width - pad * 2}
+          height={(height - pad * 2) / 3}
+          fill="#fee2e2"
+          opacity={0.35}
+        />
+
+        {/* best window highlight */}
+        {bestStartX !== undefined &&
+          bestEndX !== undefined &&
+          bestEndX > bestStartX && (
+            <rect
+              x={bestStartX}
+              y={pad}
+              width={Math.max(2, bestEndX - bestStartX)}
+              height={height - pad * 2}
+              fill="#22c55e"
+              opacity={0.14}
+            />
+          )}
+
+        {/* dawn/dusk vertical dashed lines */}
+        <line
+          x1={dawnX}
+          x2={dawnX}
+          y1={pad}
+          y2={height - pad}
+          stroke="#111827"
+          strokeDasharray="5,5"
+        />
+        <line
+          x1={duskX}
+          x2={duskX}
+          y1={pad}
+          y2={height - pad}
+          stroke="#111827"
+          strokeDasharray="5,5"
+        />
+
+        {/* score polyline */}
+        <polyline
+          fill="none"
+          stroke="#0f172a"
+          strokeWidth={2}
+          points={polyPoints}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+
+        {/* x ticks */}
+        {[0, 6, 12, 18, 24].map((h) => {
+          const x = xFromMin(h * 60);
+          return (
+            <g key={h}>
+              <line
+                x1={x}
+                x2={x}
+                y1={height - pad}
+                y2={height - pad + 4}
+                stroke="#94a3b8"
+              />
+              <text
+                x={x}
+                y={height - 6}
+                textAnchor="middle"
+                fontSize="10"
+                fill="#475569"
+              >
+                {h}:00
+              </text>
+            </g>
+          );
+        })}
+
+        {/* labels */}
+        <text
+          x={Math.min(dawnX + 4, width - 4)}
+          y={pad + 10}
+          fontSize="10"
+          fill="#475569"
+          transform={`rotate(90 ${Math.min(dawnX + 4, width - 4)} ${pad + 10})`}
+        >
+          {`dawn ${dawnLabel}`}
+        </text>
+        <text
+          x={Math.min(duskX + 4, width - 4)}
+          y={pad + 10}
+          fontSize="10"
+          fill="#475569"
+          transform={`rotate(90 ${Math.min(duskX + 4, width - 4)} ${pad + 10})`}
+        >
+          {`dusk ${duskLabel}`}
+        </text>
+        {bestStartX !== undefined && bestEndX !== undefined && (
+          <text
+            x={(bestStartX + bestEndX) / 2}
+            y={pad + 12}
+            fontSize="11"
+            fill="#065f46"
+            textAnchor="middle"
+          >
+            {bestLabel}
+          </text>
+        )}
+      </svg>
+    </div>
+  );
+}
+
+/* =============================================================================
+   Page logic
+============================================================================= */
+
 type Prefs = {
   tempMin: number;
   tempMax: number;
   windMax: number;
   uvMax: number;
   aqiMax: number;
-  humidityMax: number;       // NEW
-  cloudCoverMax: number;     // NEW
-  precipChanceMax: number;   // NEW
+  humidityMax: number; // NEW
+  cloudCoverMax: number; // NEW
+  precipChanceMax: number; // NEW
 };
 
 type SportPresetKey = "running" | "cycling" | "tennis" | "kids";
@@ -21,29 +241,53 @@ const SPORT_PRESETS: Record<SportPresetKey, { label: string; prefs: Prefs }> = {
   running: {
     label: "Running",
     prefs: {
-      tempMin: 45, tempMax: 68, windMax: 12, uvMax: 6, aqiMax: 100,
-      humidityMax: 85, cloudCoverMax: 100, precipChanceMax: 30,
+      tempMin: 45,
+      tempMax: 68,
+      windMax: 12,
+      uvMax: 6,
+      aqiMax: 100,
+      humidityMax: 85,
+      cloudCoverMax: 100,
+      precipChanceMax: 30,
     },
   },
   cycling: {
     label: "Cycling",
     prefs: {
-      tempMin: 50, tempMax: 72, windMax: 14, uvMax: 7, aqiMax: 100,
-      humidityMax: 80, cloudCoverMax: 100, precipChanceMax: 20,
+      tempMin: 50,
+      tempMax: 72,
+      windMax: 14,
+      uvMax: 7,
+      aqiMax: 100,
+      humidityMax: 80,
+      cloudCoverMax: 100,
+      precipChanceMax: 20,
     },
   },
   tennis: {
     label: "Tennis/Pickleball",
     prefs: {
-      tempMin: 55, tempMax: 75, windMax: 10, uvMax: 7, aqiMax: 100,
-      humidityMax: 85, cloudCoverMax: 100, precipChanceMax: 20,
+      tempMin: 55,
+      tempMax: 75,
+      windMax: 10,
+      uvMax: 7,
+      aqiMax: 100,
+      humidityMax: 85,
+      cloudCoverMax: 100,
+      precipChanceMax: 20,
     },
   },
   kids: {
     label: "Kids’ Play",
     prefs: {
-      tempMin: 55, tempMax: 80, windMax: 10, uvMax: 5, aqiMax: 80,
-      humidityMax: 70, cloudCoverMax: 100, precipChanceMax: 30,
+      tempMin: 55,
+      tempMax: 80,
+      windMax: 10,
+      uvMax: 5,
+      aqiMax: 80,
+      humidityMax: 70,
+      cloudCoverMax: 100,
+      precipChanceMax: 30,
     },
   },
 };
@@ -51,28 +295,45 @@ const SPORT_PRESETS: Record<SportPresetKey, { label: string; prefs: Prefs }> = {
 const DURATIONS = [30, 45, 60, 90];
 
 function detectLocalTZ() {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago"; }
-  catch { return "America/Chicago"; }
+  try {
+    return (
+      Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago"
+    );
+  } catch {
+    return "America/Chicago";
+  }
 }
-function isZipValid(zip: string) { return /^\d{5}$/.test(zip); }
-function digitsOnly(s: string) { return s.replace(/\D/g, ""); }
+function isZipValid(zip: string) {
+  return /^\d{5}$/.test(zip);
+}
+function digitsOnly(s: string) {
+  return s.replace(/\D/g, "");
+}
 function formatPhoneDisplay(d: string) {
   const x = digitsOnly(d);
   if (x.length <= 3) return x;
-  if (x.length <= 6) return `(${x.slice(0,3)}) ${x.slice(3)}`;
-  if (x.length <= 10) return `(${x.slice(0,3)}) ${x.slice(3,6)}-${x.slice(6)}`;
+  if (x.length <= 6) return `(${x.slice(0, 3)}) ${x.slice(3)}`;
+  if (x.length <= 10) return `(${x.slice(0, 3)}) ${x.slice(3, 6)}-${x.slice(6)}`;
   return `+${x}`;
 }
 function toE164US(d: string): string | null {
   const x = digitsOnly(d);
   if (x.length === 10) return `+1${x}`;
   if (x.length === 11 && x.startsWith("1")) return `+${x}`;
-  if (x.startsWith("+") && x.length >= 10) return `+${x}`;
+  if (d.startsWith("+") && x.length >= 10) return d;
   return null;
 }
 
-/* ------------------------------- small UI bits ------------------------------- */
-function Chip({ active, onClick, children }: { active?: boolean; onClick?: () => void; children: React.ReactNode; }) {
+/* ------------------------------- small UI bits ------------------------------ */
+function Chip({
+  active,
+  onClick,
+  children,
+}: {
+  active?: boolean;
+  onClick?: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <button
       type="button"
@@ -91,20 +352,38 @@ function Chip({ active, onClick, children }: { active?: boolean; onClick?: () =>
     </button>
   );
 }
-function DurationChips({ value, onChange }: { value: number; onChange: (v: number) => void; }) {
+function DurationChips({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+}) {
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
       {DURATIONS.map((d) => (
-        <Chip key={d} active={value === d} onClick={() => onChange(d)}>{d} min</Chip>
+        <Chip key={d} active={value === d} onClick={() => onChange(d)}>
+          {d} min
+        </Chip>
       ))}
     </div>
   );
 }
-function SportPresets({ value, onChange }: { value: SportPresetKey; onChange: (k: SportPresetKey) => void; }) {
+function SportPresets({
+  value,
+  onChange,
+}: {
+  value: SportPresetKey;
+  onChange: (k: SportPresetKey) => void;
+}) {
   return (
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
       {Object.entries(SPORT_PRESETS).map(([k, v]) => (
-        <Chip key={k} active={value === (k as SportPresetKey)} onClick={() => onChange(k as SportPresetKey)}>
+        <Chip
+          key={k}
+          active={value === (k as SportPresetKey)}
+          onClick={() => onChange(k as SportPresetKey)}
+        >
           {v.label}
         </Chip>
       ))}
@@ -112,75 +391,106 @@ function SportPresets({ value, onChange }: { value: SportPresetKey; onChange: (k
   );
 }
 function RangeField(props: {
-  label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void; suffix?: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (v: number) => void;
+  suffix?: string;
 }) {
   const { label, min, max, step, value, onChange, suffix } = props;
   return (
     <label style={{ display: "grid", gap: 6 }}>
       <div style={{ display: "flex", justifyContent: "space-between" }}>
         <span style={{ fontWeight: 600 }}>{label}</span>
-        <span style={{ color: "#475569" }}>{value}{suffix ?? ""}</span>
+        <span style={{ color: "#475569" }}>
+          {value}
+          {suffix ?? ""}
+        </span>
       </div>
-      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} />
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-        <span>{min}{suffix ?? ""}</span><span>{max}{suffix ?? ""}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <div
+        style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}
+      >
+        <span>
+          {min}
+          {suffix ?? ""}
+        </span>
+        <span>
+          {max}
+          {suffix ?? ""}
+        </span>
       </div>
     </label>
   );
 }
-function DeliveryTimeSelect({ timeZone, valueHour, onChange }: { timeZone: string; valueHour: number; onChange: (h: number) => void; }) {
+function DeliveryTimeSelect({
+  timeZone,
+  valueHour,
+  onChange,
+}: {
+  timeZone: string;
+  valueHour: number;
+  onChange: (h: number) => void;
+}) {
   const options = [5, 6, 7];
   const fmt = (h: number) => {
     try {
-      const dtf = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", timeZone });
-      const d = new Date(); d.setHours(h, 0, 0, 0); return dtf.format(d);
-    } catch { return `${h}:00`; }
+      const dtf = new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+        timeZone,
+      });
+      const d = new Date();
+      d.setHours(h, 0, 0, 0);
+      return dtf.format(d);
+    } catch {
+      return `${h}:00`;
+    }
   };
   return (
     <label style={{ display: "grid", gap: 6 }}>
       <span style={{ fontWeight: 600 }}>Delivery time (your timezone)</span>
-      <select value={valueHour} onChange={(e) => onChange(Number(e.target.value))} style={{ padding: 10, borderRadius: 10, border: "1px solid #e5e7eb" }}>
-        {options.map((h) => <option key={h} value={h}>{fmt(h)} ({timeZone})</option>)}
+      <select
+        value={valueHour}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{
+          padding: 10,
+          borderRadius: 10,
+          border: "1px solid #e5e7eb",
+        }}
+      >
+        {options.map((h) => (
+          <option key={h} value={h}>
+            {fmt(h)} ({timeZone})
+          </option>
+        ))}
       </select>
-      <span style={{ fontSize: 12, color: "#475569" }}>Default is 5:00 AM. You can change this later.</span>
+      <span style={{ fontSize: 12, color: "#475569" }}>
+        Default is 5:00 AM. You can change this later.
+      </span>
     </label>
   );
 }
 
-/** sample comfort chart (unchanged) */
-function SampleChart() {
-  const scores = [28, 35, 48, 62, 74, 87, 92, 90, 84, 70, 52, 40];
-  const width = 360, height = 100, pad = 8;
-  const step = (width - pad * 2) / (scores.length - 1);
-  const pts = scores.map((s, i) => {
-    const x = pad + i * step;
-    const y = height - pad - (s / 100) * (height - pad * 2);
-    return `${x},${y}`;
-  }).join(" ");
-  return (
-    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff", display: "inline-block" }}>
-      <svg width={width} height={height} role="img" aria-label="Sample comfort chart">
-        <rect x={0} y={0} width={width} height={height} fill="#fff" />
-        <rect x={0} y={height * 0.0} width={width} height={height * 0.33} fill="#fee2e2" />
-        <rect x={0} y={height * 0.33} width={width} height={height * 0.34} fill="#fef3c7" />
-        <rect x={0} y={height * 0.67} width={width} height={height * 0.33} fill="#dcfce7" />
-        <polyline fill="none" stroke="#0f172a" strokeWidth={2} points={pts} strokeLinejoin="round" strokeLinecap="round" />
-      </svg>
-      <div style={{ fontSize: 12, color: "#475569", marginTop: 8 }}>
-        We mark minutes outside your range as <strong>red</strong> and apply a penalty—instead of excluding them—so you still get a best window even on imperfect days.
-      </div>
-    </div>
-  );
-}
+/* ---------------------------------- Page ----------------------------------- */
 
-/* ---------------------------------- page ---------------------------------- */
 export default function Page() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
 
-  // zip + preview
+  // zip
   const [zip, setZip] = useState("");
   const [zipPreview, setZipPreview] = useState<string | null>(null);
   const [zipBusy, setZipBusy] = useState(false);
+  const [loc, setLoc] = useState<{ lat: number; lon: number } | null>(null);
 
   // duration + delivery
   const [duration, setDuration] = useState<number>(60);
@@ -188,23 +498,29 @@ export default function Page() {
   const [deliveryHour, setDeliveryHour] = useState(5);
 
   // phone (masked)
-  const [phoneDigits, setPhoneDigits] = useState(""); const phoneDisplay = formatPhoneDisplay(phoneDigits);
+  const [phoneDigits, setPhoneDigits] = useState("");
+  const phoneDisplay = formatPhoneDisplay(phoneDigits);
 
   // presets + sliders
   const [preset, setPreset] = useState<SportPresetKey>("running");
   const [prefs, setPrefs] = useState<Prefs>(SPORT_PRESETS.running.prefs);
 
-  // submission
+  // submission state
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
 
-  // bot traps
+  // bot trap
   const [hp, setHp] = useState("");
   const [startedAt] = useState<number>(() => Date.now());
 
-  useEffect(() => { setPrefs(SPORT_PRESETS[preset].prefs); }, [preset]);
-  useEffect(() => { setTz(detectLocalTZ()); }, []);
+  // preview data
+  const [preview, setPreview] = useState<any>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+
+  useEffect(() => setPrefs(SPORT_PRESETS[preset].prefs), [preset]);
+  useEffect(() => setTz(detectLocalTZ()), []);
 
   const zipStatus = useMemo(() => {
     if (!zip) return null;
@@ -222,16 +538,61 @@ export default function Page() {
       if (r.ok) {
         const j = await r.json();
         if (j?.city && j?.state) setZipPreview(`${j.city}, ${j.state} (${zip})`);
+        // Expecting latitude/longitude from your API (zipcodes pkg supports it)
+        if (typeof j?.latitude === "number" && typeof j?.longitude === "number") {
+          setLoc({ lat: j.latitude, lon: j.longitude });
+        } else {
+          setLoc(null);
+        }
       }
-    } finally { setZipBusy(false); }
+    } finally {
+      setZipBusy(false);
+    }
   }
+
+  // Fetch live preview (civil dawn/dusk + best minute window) whenever inputs ready
+  useEffect(() => {
+    const ready = loc && isZipValid(zip) && tz && duration && prefs;
+    if (!ready) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setPreviewLoading(true);
+        setPreviewError(null);
+        const r = await fetch("/api/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lat: loc!.lat,
+            lon: loc!.lon,
+            timeZone: tz,
+            durationMin: duration,
+            prefs,
+          }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const data = await r.json();
+        if (!cancelled) setPreview(data);
+      } catch (e: any) {
+        if (!cancelled) setPreviewError(e?.message ?? "Preview failed");
+      } finally {
+        if (!cancelled) setPreviewLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loc, zip, tz, duration, JSON.stringify(prefs)]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setSubmitting(true); setSubmitError(null);
+    setSubmitting(true);
+    setSubmitError(null);
     try {
       const phoneE164 = toE164US(phoneDigits);
       if (!phoneE164) throw new Error("Please enter a valid US mobile number");
+      if (!isZipValid(zip)) throw new Error("ZIP looks invalid");
 
       const payload = {
         zip,
@@ -239,8 +600,8 @@ export default function Page() {
         phone: phoneE164,
         deliveryHourLocal: deliveryHour,
         timeZone: tz,
-        prefs, // includes all sliders
-        hp,
+        prefs,
+        hp, // honeypot
       };
 
       const r = await fetch("/api/signup", {
@@ -256,7 +617,9 @@ export default function Page() {
       setOk(true);
     } catch (err: any) {
       setSubmitError(err?.message ?? "Something went wrong");
-    } finally { setSubmitting(false); }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -267,43 +630,116 @@ export default function Page() {
           We text you the best time to train—custom to your weather prefs.
         </h1>
         <p style={{ fontSize: 18, color: "#475569", marginTop: 12 }}>
-          Pick your temperature, wind, UV, humidity and more. We score every minute from <strong>0–100</strong> and text your best window every morning.
+          Pick your temperature, wind, UV, humidity and more. We score every minute from{" "}
+          <strong>0–100</strong> and text your best window every morning.
         </p>
-        <ul style={{ listStyle: "none", padding: 0, margin: "16px 0 0", display: "flex", gap: 16, color: "#334155", flexWrap: "wrap", fontSize: 14 }}>
-          <li>• No app</li><li>• No login</li><li>• Cancel anytime (text STOP)</li>
+        <ul
+          style={{
+            listStyle: "none",
+            padding: 0,
+            margin: "16px 0 0",
+            display: "flex",
+            gap: 16,
+            color: "#334155",
+            flexWrap: "wrap",
+            fontSize: 14,
+          }}
+        >
+          <li>• No app</li>
+          <li>• No login</li>
+          <li>• Cancel anytime (text STOP)</li>
         </ul>
       </section>
 
-      {/* Form + Sample */}
-      <section style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 24, alignItems: "start" }}>
-        <form onSubmit={handleSubmit} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 16, padding: 18, display: "grid", gap: 16 }}>
+      {/* Form + Live Preview */}
+      <section
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1.1fr 1fr",
+          gap: 24,
+          alignItems: "start",
+        }}
+      >
+        {/* Left: form */}
+        <form
+          onSubmit={handleSubmit}
+          style={{
+            background: "#fff",
+            border: "1px solid #e5e7eb",
+            borderRadius: 16,
+            padding: 18,
+            display: "grid",
+            gap: 16,
+          }}
+        >
           <div style={{ fontSize: 13, color: "#64748b" }}>Step {step} of 3</div>
 
           {/* Step 1: ZIP */}
           {step === 1 && (
             <div style={{ display: "grid", gap: 8 }}>
-              <label htmlFor="zip" style={{ fontWeight: 600 }}>Your ZIP code</label>
+              <label htmlFor="zip" style={{ fontWeight: 600 }}>
+                Your ZIP code
+              </label>
               <input
-                id="zip" inputMode="numeric" pattern="\d{5}" required value={zip}
-                onChange={(e) => { setZip(e.target.value.slice(0,5)); setZipPreview(null); }}
+                id="zip"
+                inputMode="numeric"
+                pattern="\d{5}"
+                required
+                value={zip}
+                onChange={(e) => {
+                  setZip(e.target.value.slice(0, 5));
+                  setZipPreview(null);
+                }}
                 onBlur={lookupZip}
                 placeholder="e.g., 61550"
-                style={{ padding: 12, borderRadius: 10, border: "1px solid #e5e7eb", fontSize: 16 }}
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  border: "1px solid #e5e7eb",
+                  fontSize: 16,
+                }}
                 aria-describedby="zipHelp"
               />
               <div id="zipHelp" style={{ fontSize: 12, color: "#475569" }}>
-                {zipBusy ? "Looking up city…" : "We’ll personalize your forecast using this location."}
+                {zipBusy
+                  ? "Looking up city…"
+                  : "We’ll personalize your forecast using this location."}
               </div>
-              <div role="status" style={{ fontSize: 12, color: zipPreview ? "#16a34a" : "#b91c1c", minHeight: 16 }}>
+              <div
+                role="status"
+                style={{
+                  fontSize: 12,
+                  color: zipPreview ? "#16a34a" : "#b91c1c",
+                  minHeight: 16,
+                }}
+              >
                 {zipStatus ?? ""}
               </div>
               {/* honeypot (hidden) */}
               <div style={{ position: "absolute", left: -9999, top: -9999 }}>
-                <label>Website<input tabIndex={-1} autoComplete="off" value={hp} onChange={(e) => setHp(e.target.value)} /></label>
+                <label>
+                  Website
+                  <input
+                    tabIndex={-1}
+                    autoComplete="off"
+                    value={hp}
+                    onChange={(e) => setHp(e.target.value)}
+                  />
+                </label>
               </div>
               <button
-                type="button" onClick={() => isZipValid(zip) && setStep(2)} disabled={!isZipValid(zip)}
-                style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid transparent", background: isZipValid(zip) ? "#0f172a" : "#cbd5e1", color: "white", cursor: isZipValid(zip) ? "pointer" : "not-allowed", width: "100%" }}
+                type="button"
+                onClick={() => isZipValid(zip) && setStep(2)}
+                disabled={!isZipValid(zip)}
+                style={{
+                  padding: "12px 14px",
+                  borderRadius: 10,
+                  border: "1px solid transparent",
+                  background: isZipValid(zip) ? "#0f172a" : "#cbd5e1",
+                  color: "white",
+                  cursor: isZipValid(zip) ? "pointer" : "not-allowed",
+                  width: "100%",
+                }}
               >
                 Continue
               </button>
@@ -317,83 +753,259 @@ export default function Page() {
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>Duration</div>
                 <DurationChips value={duration} onChange={setDuration} />
               </div>
-              <DeliveryTimeSelect timeZone={tz} valueHour={deliveryHour} onChange={setDeliveryHour} />
+              <DeliveryTimeSelect
+                timeZone={tz}
+                valueHour={deliveryHour}
+                onChange={setDeliveryHour}
+              />
               <div style={{ display: "flex", gap: 8 }}>
-                <button type="button" onClick={() => setStep(1)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", flex: 1 }}>Back</button>
-                <button type="button" onClick={() => setStep(3)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid transparent", background: "#0f172a", color: "white", cursor: "pointer", flex: 2 }}>Continue</button>
+                <button
+                  type="button"
+                  onClick={() => setStep(1)}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                    cursor: "pointer",
+                    flex: 1,
+                  }}
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStep(3)}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: "1px solid transparent",
+                    background: "#0f172a",
+                    color: "white",
+                    cursor: "pointer",
+                    flex: 2,
+                  }}
+                >
+                  Continue
+                </button>
               </div>
             </div>
           )}
 
-          {/* Step 3: Phone + Presets + ALL Sliders + Consent */}
+          {/* Step 3: Phone + Presets + Sliders + Consent */}
           {step === 3 && (
             <div style={{ display: "grid", gap: 16 }}>
-              <label htmlFor="phone" style={{ fontWeight: 600 }}>Mobile number</label>
+              <label htmlFor="phone" style={{ fontWeight: 600 }}>
+                Mobile number
+              </label>
               <input
-                id="phone" type="tel" inputMode="tel" required
+                id="phone"
+                type="tel"
+                inputMode="tel"
+                required
                 placeholder="(555) 555-5555"
                 value={phoneDisplay}
-                onChange={(e) => setPhoneDigits(digitsOnly(e.target.value).slice(0, 11))}
-                style={{ padding: 12, borderRadius: 10, border: "1px solid #e5e7eb", fontSize: 16 }}
+                onChange={(e) =>
+                  setPhoneDigits(digitsOnly(e.target.value).slice(0, 11))
+                }
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  border: "1px solid #e5e7eb",
+                  fontSize: 16,
+                }}
                 aria-describedby="smsHelp"
               />
               <p id="smsHelp" style={{ fontSize: 12, color: "#475569", margin: 0 }}>
-                Free while in beta. 1 text/day. Msg & data rates may apply. Reply <strong>STOP</strong> to cancel, <strong>HELP</strong> for help.
+                Free while in beta. 1 text/day. Msg & data rates may apply. Reply{" "}
+                <strong>STOP</strong> to cancel, <strong>HELP</strong> for help.
               </p>
 
               <div>
-                <div style={{ fontWeight: 600, margin: "8px 0" }}>Sport presets</div>
+                <div style={{ fontWeight: 600, margin: "8px 0" }}>
+                  Sport presets
+                </div>
                 <SportPresets value={preset} onChange={setPreset} />
               </div>
 
+              {/* All sliders */}
               <div style={{ display: "grid", gap: 12, marginTop: 6 }}>
-                <div style={{ fontWeight: 700, marginTop: 4 }}>Weather preferences</div>
+                <div style={{ fontWeight: 700, marginTop: 4 }}>
+                  Weather preferences
+                </div>
                 {/* Temperature */}
-                <RangeField label="Min temperature" min={-10} max={80} step={1} value={prefs.tempMin} onChange={(v) => setPrefs((p) => ({ ...p, tempMin: Math.min(v, p.tempMax) }))} suffix="°F" />
-                <RangeField label="Max temperature" min={prefs.tempMin} max={100} step={1} value={prefs.tempMax} onChange={(v) => setPrefs((p) => ({ ...p, tempMax: Math.max(v, p.tempMin) }))} suffix="°F" />
+                <RangeField
+                  label="Min temperature"
+                  min={-10}
+                  max={80}
+                  step={1}
+                  value={prefs.tempMin}
+                  onChange={(v) =>
+                    setPrefs((p) => ({ ...p, tempMin: Math.min(v, p.tempMax) }))
+                  }
+                  suffix="°F"
+                />
+                <RangeField
+                  label="Max temperature"
+                  min={prefs.tempMin}
+                  max={100}
+                  step={1}
+                  value={prefs.tempMax}
+                  onChange={(v) =>
+                    setPrefs((p) => ({ ...p, tempMax: Math.max(v, p.tempMin) }))
+                  }
+                  suffix="°F"
+                />
                 {/* Wind */}
-                <RangeField label="Max wind" min={0} max={25} step={1} value={prefs.windMax} onChange={(v) => setPrefs((p) => ({ ...p, windMax: v }))} suffix=" mph" />
+                <RangeField
+                  label="Max wind"
+                  min={0}
+                  max={25}
+                  step={1}
+                  value={prefs.windMax}
+                  onChange={(v) => setPrefs((p) => ({ ...p, windMax: v }))}
+                  suffix=" mph"
+                />
                 {/* UV */}
-                <RangeField label="Max UV" min={0} max={11} step={1} value={prefs.uvMax} onChange={(v) => setPrefs((p) => ({ ...p, uvMax: v }))} />
+                <RangeField
+                  label="Max UV"
+                  min={0}
+                  max={11}
+                  step={1}
+                  value={prefs.uvMax}
+                  onChange={(v) => setPrefs((p) => ({ ...p, uvMax: v }))}
+                />
                 {/* AQI */}
-                <RangeField label="Max AQI" min={0} max={200} step={5} value={prefs.aqiMax} onChange={(v) => setPrefs((p) => ({ ...p, aqiMax: v }))} />
+                <RangeField
+                  label="Max AQI"
+                  min={0}
+                  max={200}
+                  step={5}
+                  value={prefs.aqiMax}
+                  onChange={(v) => setPrefs((p) => ({ ...p, aqiMax: v }))}
+                />
                 {/* NEW: Humidity */}
-                <RangeField label="Max humidity" min={0} max={100} step={1} value={prefs.humidityMax} onChange={(v) => setPrefs((p) => ({ ...p, humidityMax: v }))} suffix="%" />
+                <RangeField
+                  label="Max humidity"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={prefs.humidityMax}
+                  onChange={(v) => setPrefs((p) => ({ ...p, humidityMax: v }))}
+                  suffix="%"
+                />
                 {/* NEW: Cloud cover */}
-                <RangeField label="Max cloud cover" min={0} max={100} step={1} value={prefs.cloudCoverMax} onChange={(v) => setPrefs((p) => ({ ...p, cloudCoverMax: v }))} suffix="%" />
+                <RangeField
+                  label="Max cloud cover"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={prefs.cloudCoverMax}
+                  onChange={(v) => setPrefs((p) => ({ ...p, cloudCoverMax: v }))}
+                  suffix="%"
+                />
                 {/* NEW: Precip chance */}
-                <RangeField label="Max precipitation chance" min={0} max={100} step={1} value={prefs.precipChanceMax} onChange={(v) => setPrefs((p) => ({ ...p, precipChanceMax: v }))} suffix="%" />
+                <RangeField
+                  label="Max precipitation chance"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={prefs.precipChanceMax}
+                  onChange={(v) =>
+                    setPrefs((p) => ({ ...p, precipChanceMax: v }))
+                  }
+                  suffix="%"
+                />
               </div>
 
-              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 14 }}>
+              <label
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "flex-start",
+                  fontSize: 14,
+                }}
+              >
                 <input required type="checkbox" />
                 <span>
-                  I agree to receive automated daily texts from ClearSked and accept the{" "}
-                  <a href="/terms" style={{ color: "#2563eb" }}>Terms</a> and{" "}
+                  I agree to receive automated daily texts from ClearSked and
+                  accept the <a href="/terms" style={{ color: "#2563eb" }}>Terms</a> and{" "}
                   <a href="/privacy" style={{ color: "#2563eb" }}>Privacy Policy</a>. Msg freq: 1/day.
                 </span>
               </label>
 
               {submitError && (
-                <div role="alert" style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", padding: 10, borderRadius: 10, fontSize: 14 }}>
+                <div
+                  role="alert"
+                  style={{
+                    background: "#fef2f2",
+                    border: "1px solid #fecaca",
+                    color: "#991b1b",
+                    padding: 10,
+                    borderRadius: 10,
+                    fontSize: 14,
+                  }}
+                >
                   {submitError}
                 </div>
               )}
 
               {!ok ? (
-                <button type="submit" disabled={submitting} style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid transparent", background: submitting ? "#64748b" : "#0f172a", color: "white", cursor: submitting ? "not-allowed" : "pointer" }}>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  style={{
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    border: "1px solid transparent",
+                    background: submitting ? "#64748b" : "#0f172a",
+                    color: "white",
+                    cursor: submitting ? "not-allowed" : "pointer",
+                  }}
+                >
                   {submitting ? "Submitting…" : "Text me my best hour"}
                 </button>
               ) : (
-                <div style={{ background: "#ecfdf5", border: "1px solid #bbf7d0", color: "#065f46", padding: 12, borderRadius: 10 }}>
-                  🎉 You’re in! We’ll text your top window daily at <strong>{deliveryHour}:00 ({tz})</strong>.
-                  Share with a friend: <a href="https://clearsked.com/?ref=friend" style={{ color: "#0f172a", fontWeight: 600 }}>clearsked.com</a>
+                <div
+                  style={{
+                    background: "#ecfdf5",
+                    border: "1px solid #bbf7d0",
+                    color: "#065f46",
+                    padding: 12,
+                    borderRadius: 10,
+                  }}
+                >
+                  🎉 You’re in! We’ll text your top window daily at{" "}
+                  <strong>
+                    {deliveryHour}:00 ({tz})
+                  </strong>
+                  . Share:{" "}
+                  <a
+                    href="https://clearsked.com/?ref=friend"
+                    style={{ color: "#0f172a", fontWeight: 600 }}
+                  >
+                    clearsked.com
+                  </a>
                 </div>
               )}
 
-              <div style={{ fontSize: 12, color: "#64748b" }}>Free while in beta. No spam—just your daily window.</div>
+              <div style={{ fontSize: 12, color: "#64748b" }}>
+                Free while in beta. No spam—just your daily window.
+              </div>
+
               <div style={{ display: "flex", gap: 8 }}>
-                <button type="button" onClick={() => setStep(2)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", flex: 1 }}>
+                <button
+                  type="button"
+                  onClick={() => setStep(2)}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                    cursor: "pointer",
+                    flex: 1,
+                  }}
+                >
                   Back
                 </button>
               </div>
@@ -401,15 +1013,41 @@ export default function Page() {
           )}
         </form>
 
-        {/* Sample panel */}
+        {/* Right: Live preview */}
         <div>
           <div style={{ marginBottom: 12 }}>
-            <h2 style={{ margin: 0, fontSize: 20 }}>See a sample</h2>
+            <h2 style={{ margin: 0, fontSize: 20 }}>Preview for your settings</h2>
             <p style={{ margin: "8px 0 0", color: "#475569" }}>
-              Your ranges drive a 0–100 comfort score. We penalize “red” minutes instead of excluding them—so you always get a top-scoring window.
+              Dashed lines show <strong>civil dawn &amp; dusk</strong>. Green bar = your best{" "}
+              <strong>{duration} min</strong> window (minute-precise).
             </p>
           </div>
-          <SampleChart />
+
+          {!loc && (
+            <div style={{ color: "#475569" }}>
+              Enter your ZIP and continue to see a live preview here.
+            </div>
+          )}
+          {previewLoading && (
+            <div style={{ color: "#475569" }}>Loading preview…</div>
+          )}
+          {previewError && (
+            <div style={{ color: "#b91c1c" }}>Preview error: {previewError}</div>
+          )}
+
+          {preview && !preview.empty && (
+            <PreviewChart
+              timeZone={tz}
+              series={preview.series}
+              dawnUTC={preview.dawnUTC}
+              duskUTC={preview.duskUTC}
+              bestStartUTC={preview.bestStartUTC}
+              bestEndUTC={preview.bestEndUTC}
+              dawnLabel={preview.dawnLocal}
+              duskLabel={preview.duskLocal}
+              bestLabel={`Best ${duration}min: ${preview.startLocal}–${preview.endLocal} (Score ${preview.bestScore})`}
+            />
+          )}
         </div>
       </section>
     </main>
