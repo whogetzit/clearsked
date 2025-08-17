@@ -155,4 +155,213 @@ export default function Page() {
   // phone (masked) + prefs
   const [phoneDigits, setPhoneDigits] = useState(""); const phoneDisplay = formatPhoneDisplay(phoneDigits);
   const [preset, setPreset] = useState<SportPresetKey>("running");
-  const [prefs, setP]()
+  const [prefs, setPrefs] = useState<Prefs>(SPORT_PRESETS.running.prefs);
+  // submission
+  const [submitting, setSubmitting] = useState(false); const [submitError, setSubmitError] = useState<string | null>(null); const [ok, setOk] = useState(false);
+  // bot traps
+  const [hp, setHp] = useState(""); const [startedAt] = useState<number>(() => Date.now());
+
+  useEffect(() => { setPrefs(SPORT_PRESETS[preset].prefs); }, [preset]);
+  useEffect(() => { setTz(detectLocalTZ()); }, []);
+
+  const zipStatus = useMemo(() => {
+    if (!zip) return null;
+    if (!isZipValid(zip)) return "Enter a 5-digit US ZIP";
+    if (zipPreview) return zipPreview;
+    return "Looks good";
+  }, [zip, zipPreview]);
+
+  async function lookupZip() {
+    setZipPreview(null);
+    if (!isZipValid(zip)) return;
+    try {
+      setZipBusy(true);
+      const r = await fetch(`/api/zip/${zip}`, { cache: "no-store" });
+      if (r.ok) {
+        const j = await r.json();
+        if (j?.city && j?.state) setZipPreview(`${j.city}, ${j.state} (${zip})`);
+      }
+    } finally { setZipBusy(false); }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true); setSubmitError(null);
+    try {
+      const phoneE164 = toE164US(phoneDigits);
+      if (!phoneE164) throw new Error("Please enter a valid US mobile number");
+
+      const payload = {
+        zip,
+        durationMin: duration,
+        phone: phoneE164,
+        deliveryHourLocal: deliveryHour,
+        timeZone: tz,
+        prefs,
+        hp, // honeypot (must be empty)
+      };
+
+      const r = await fetch("/api/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-form-latency": ((Date.now() - startedAt) / 1000).toFixed(2),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!r.ok) throw new Error((await r.text()) || `Signup failed (${r.status})`);
+      setOk(true);
+    } catch (err: any) {
+      setSubmitError(err?.message ?? "Something went wrong");
+    } finally { setSubmitting(false); }
+  }
+
+  return (
+    <main>
+      {/* Hero */}
+      <section style={{ marginBottom: 28 }}>
+        <h1 style={{ fontSize: 36, lineHeight: 1.1, margin: 0 }}>
+          We text you the best time to train—custom to your weather prefs.
+        </h1>
+        <p style={{ fontSize: 18, color: "#475569", marginTop: 12 }}>
+          Pick your temperature, wind, and UV ranges. We score every minute from <strong>0–100</strong> and text your best window every morning.
+        </p>
+        <ul style={{ listStyle: "none", padding: 0, margin: "16px 0 0", display: "flex", gap: 16, color: "#334155", flexWrap: "wrap", fontSize: 14 }}>
+          <li>• No app</li><li>• No login</li><li>• Cancel anytime (text STOP)</li>
+        </ul>
+      </section>
+
+      {/* Form + Sample */}
+      <section style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 24, alignItems: "start" }}>
+        <form onSubmit={handleSubmit} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 16, padding: 18, display: "grid", gap: 16 }}>
+          <div style={{ fontSize: 13, color: "#64748b" }}>Step {step} of 3</div>
+
+          {/* Step 1: ZIP */}
+          {step === 1 && (
+            <div style={{ display: "grid", gap: 8 }}>
+              <label htmlFor="zip" style={{ fontWeight: 600 }}>Your ZIP code</label>
+              <input
+                id="zip" inputMode="numeric" pattern="\d{5}" required value={zip}
+                onChange={(e) => { setZip(e.target.value.slice(0,5)); setZipPreview(null); }}
+                onBlur={lookupZip}
+                placeholder="e.g., 61550"
+                style={{ padding: 12, borderRadius: 10, border: "1px solid #e5e7eb", fontSize: 16 }}
+                aria-describedby="zipHelp"
+              />
+              <div id="zipHelp" style={{ fontSize: 12, color: "#475569" }}>
+                {zipBusy ? "Looking up city…" : "We’ll personalize your forecast using this location."}
+              </div>
+              <div role="status" style={{ fontSize: 12, color: zipPreview ? "#16a34a" : "#b91c1c", minHeight: 16 }}>
+                {zipStatus ?? ""}
+              </div>
+              {/* honeypot (hidden) */}
+              <div style={{ position: "absolute", left: -9999, top: -9999 }}>
+                <label>Website<input tabIndex={-1} autoComplete="off" value={hp} onChange={(e) => setHp(e.target.value)} /></label>
+              </div>
+              <button
+                type="button" onClick={() => isZipValid(zip) && setStep(2)} disabled={!isZipValid(zip)}
+                style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid transparent", background: isZipValid(zip) ? "#0f172a" : "#cbd5e1", color: "white", cursor: isZipValid(zip) ? "pointer" : "not-allowed", width: "100%" }}
+              >
+                Continue
+              </button>
+            </div>
+          )}
+
+          {/* Step 2: Duration + Delivery time */}
+          {step === 2 && (
+            <div style={{ display: "grid", gap: 16 }}>
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>Duration</div>
+                <DurationChips value={duration} onChange={setDuration} />
+              </div>
+              <DeliveryTimeSelect timeZone={tz} valueHour={deliveryHour} onChange={setDeliveryHour} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={() => setStep(1)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", flex: 1 }}>Back</button>
+                <button type="button" onClick={() => setStep(3)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid transparent", background: "#0f172a", color: "white", cursor: "pointer", flex: 2 }}>Continue</button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Phone + Presets + Advanced + Consent */}
+          {step === 3 && (
+            <div style={{ display: "grid", gap: 16 }}>
+              <label htmlFor="phone" style={{ fontWeight: 600 }}>Mobile number</label>
+              <input
+                id="phone" type="tel" inputMode="tel" required
+                placeholder="(555) 555-5555"
+                value={phoneDisplay}
+                onChange={(e) => setPhoneDigits(digitsOnly(e.target.value).slice(0, 11))}
+                style={{ padding: 12, borderRadius: 10, border: "1px solid #e5e7eb", fontSize: 16 }}
+                aria-describedby="smsHelp"
+              />
+              <p id="smsHelp" style={{ fontSize: 12, color: "#475569", margin: 0 }}>
+                Free while in beta. 1 text/day. Msg & data rates may apply. Reply <strong>STOP</strong> to cancel, <strong>HELP</strong> for help.
+              </p>
+
+              <div>
+                <div style={{ fontWeight: 600, margin: "8px 0" }}>Sport presets</div>
+                <SportPresets value={preset} onChange={setPreset} />
+              </div>
+
+              <details style={{ marginTop: 4 }}>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced preferences (optional)</summary>
+                <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+                  <RangeField label="Min temperature" min={-10} max={80} step={1} value={prefs.tempMin} onChange={(v) => setPrefs((p) => ({ ...p, tempMin: v }))} suffix="°F" />
+                  <RangeField label="Max temperature" min={prefs.tempMin} max={100} step={1} value={prefs.tempMax} onChange={(v) => setPrefs((p) => ({ ...p, tempMax: v }))} suffix="°F" />
+                  <RangeField label="Max wind" min={0} max={25} step={1} value={prefs.windMax} onChange={(v) => setPrefs((p) => ({ ...p, windMax: v }))} suffix=" mph" />
+                  <RangeField label="Max UV" min={0} max={11} step={1} value={prefs.uvMax} onChange={(v) => setPrefs((p) => ({ ...p, uvMax: v }))} />
+                  <RangeField label="Max AQI" min={0} max={200} step={5} value={prefs.aqiMax} onChange={(v) => setPrefs((p) => ({ ...p, aqiMax: v }))} />
+                </div>
+              </details>
+
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 14 }}>
+                <input required type="checkbox" />
+                <span>
+                  I agree to receive automated daily texts from ClearSked and accept the{" "}
+                  <a href="/terms" style={{ color: "#2563eb" }}>Terms</a> and{" "}
+                  <a href="/privacy" style={{ color: "#2563eb" }}>Privacy Policy</a>. Msg freq: 1/day.
+                </span>
+              </label>
+
+              {submitError && (
+                <div role="alert" style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", padding: 10, borderRadius: 10, fontSize: 14 }}>
+                  {submitError}
+                </div>
+              )}
+
+              {!ok ? (
+                <button type="submit" disabled={submitting} style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid transparent", background: submitting ? "#64748b" : "#0f172a", color: "white", cursor: submitting ? "not-allowed" : "pointer" }}>
+                  {submitting ? "Submitting…" : "Text me my best hour"}
+                </button>
+              ) : (
+                <div style={{ background: "#ecfdf5", border: "1px solid #bbf7d0", color: "#065f46", padding: 12, borderRadius: 10 }}>
+                  🎉 You’re in! We’ll text your top window daily at <strong>{deliveryHour}:00 ({tz})</strong>.
+                  Share with a friend: <a href="https://clearsked.com/?ref=friend" style={{ color: "#0f172a", fontWeight: 600 }}>clearsked.com</a>
+                </div>
+              )}
+
+              <div style={{ fontSize: 12, color: "#64748b" }}>Free while in beta. No spam—just your daily window.</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={() => setStep(2)} style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid #e5e7eb", background: "#fff", cursor: "pointer", flex: 1 }}>
+                  Back
+                </button>
+              </div>
+            </div>
+          )}
+        </form>
+
+        {/* Sample panel */}
+        <div>
+          <div style={{ marginBottom: 12 }}>
+            <h2 style={{ margin: 0, fontSize: 20 }}>See a sample</h2>
+            <p style={{ margin: "8px 0 0", color: "#475569" }}>
+              Your ranges drive a 0–100 comfort score. We penalize “red” minutes instead of excluding them—so you always get a top-scoring window.
+            </p>
+          </div>
+          <SampleChart />
+        </div>
+      </section>
+    </main>
+  );
+}
