@@ -17,7 +17,7 @@ export const prisma =
   globalForPrisma.prisma ?? new PrismaClient({ log: ["error", "warn"] });
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
-// Twilio lazy init (avoid build-time env errors)
+// Twilio lazy init
 let twilioClient: ReturnType<typeof Twilio> | null = null;
 function getTwilio() {
   if (!twilioClient) {
@@ -43,9 +43,29 @@ const sameLocalDate = (a: Date, b: Date, tz: string) => {
   return fmt(a) === fmt(b);
 };
 
-type RunOpts = { testPhone?: string; dry?: boolean; debug?: boolean };
+// Choose daylight slice aligned to timeline's day, with ±1 day fallback
+function pickDaylightSlice(
+  timeline: { time: Date }[],
+  lat: number,
+  lon: number,
+  timeZone: string
+) {
+  const t0 = timeline[0]?.time ?? new Date();
+  const DAY = 24 * 60 * 60 * 1000;
+  const candidates = [new Date(), t0, new Date(t0.getTime() - DAY), new Date(t0.getTime() + DAY)];
 
-async function coreRun({ testPhone, dry, debug }: RunOpts) {
+  for (const d of candidates) {
+    const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, d);
+    const daylight = timeline.filter((m) => m.time >= dawnUTC && m.time < duskUTC);
+    if (daylight.length > 0) return { daylight, dawnUTC, duskUTC };
+  }
+  const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, new Date());
+  return { daylight: [] as { time: Date }[], dawnUTC, duskUTC };
+}
+
+type RunOpts = { testPhone?: string; dry?: boolean; debug?: boolean; force?: boolean };
+
+async function coreRun({ testPhone, dry, debug, force }: RunOpts) {
   const where: any = { active: true };
   if (testPhone) where.phoneE164 = testPhone;
 
@@ -66,12 +86,12 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
       d.deliveryHourLocal = deliveryHourLocal;
       d.localHourNow = localHourNow(tz);
 
-      if (!testPhone && localHourNow(tz) !== deliveryHourLocal) {
+      if (!testPhone && !force && localHourNow(tz) !== deliveryHourLocal) {
         d.skipped = "local hour does not match deliveryHourLocal";
         details.push(d);
         continue;
       }
-      if (!testPhone && s.lastSentAt && sameLocalDate(new Date(s.lastSentAt), new Date(), tz)) {
+      if (!testPhone && !force && s.lastSentAt && sameLocalDate(new Date(s.lastSentAt), new Date(), tz)) {
         d.skipped = "already sent today";
         details.push(d);
         continue;
@@ -85,13 +105,15 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
         continue;
       }
 
-      const { dawnUTC, duskUTC } = civilTwilightUTC(s.latitude, s.longitude, tz, new Date());
-      const daylight = timeline.filter((m: any) => m.time >= dawnUTC && m.time < duskUTC);
+      // Align dawn/dusk with the timeline’s day
+      const { daylight, dawnUTC, duskUTC } = pickDaylightSlice(timeline, s.latitude, s.longitude, tz);
+      d.timelineStartUTC = timeline[0].time.toISOString();
+      d.timelineEndUTC = timeline[timeline.length - 1].time.toISOString();
       d.dawnLocal = formatLocalTime(dawnUTC, tz);
       d.duskLocal = formatLocalTime(duskUTC, tz);
 
       if (!daylight.length) {
-        d.skipped = "no daylight minutes";
+        d.skipped = "no daylight minutes (timeline/day misalignment)";
         details.push(d);
         continue;
       }
@@ -178,14 +200,20 @@ async function coreRun({ testPhone, dry, debug }: RunOpts) {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const phone = url.searchParams.get("phone") || undefined;
-  const dry = url.searchParams.get("dry") === "1" || url.searchParams.get("dry") === "true";
-  const debug = url.searchParams.get("debug") === "1" || url.searchParams.get("debug") === "true";
-  const result = await coreRun({ testPhone: phone, dry, debug });
+  const dry = ["1", "true"].includes(url.searchParams.get("dry") || "");
+  const debug = ["1", "true"].includes(url.searchParams.get("debug") || "");
+  const force = ["1", "true"].includes(url.searchParams.get("force") || "");
+  const result = await coreRun({ testPhone: phone, dry, debug, force });
   return NextResponse.json({ ok: true, method: "GET", ...result });
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { phone?: string; dry?: boolean; debug?: boolean };
-  const result = await coreRun({ testPhone: body?.phone, dry: !!body?.dry, debug: !!body?.debug });
+  const body = (await req.json().catch(() => ({}))) as { phone?: string; dry?: boolean; debug?: boolean; force?: boolean };
+  const result = await coreRun({
+    testPhone: body?.phone,
+    dry: !!body?.dry,
+    debug: !!body?.debug,
+    force: !!body?.force,
+  });
   return NextResponse.json({ ok: true, method: "POST", ...result });
 }
