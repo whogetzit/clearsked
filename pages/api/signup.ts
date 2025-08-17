@@ -4,7 +4,17 @@ import { prisma } from "@/server/db";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const zipcodes = require("zipcodes");
 
-type Prefs = { tempMin?: number; tempMax?: number; windMax?: number; uvMax?: number; aqiMax?: number; };
+// pages/api/signup.ts (only the Prefs type changed)
+type Prefs = {
+  tempMin?: number;
+  tempMax?: number;
+  windMax?: number;
+  uvMax?: number;
+  aqiMax?: number;
+  humidityMax?: number;       // NEW
+  cloudCoverMax?: number;     // NEW
+  precipChanceMax?: number;   // NEW
+};
 
 function toInt(v: unknown, fallback: number): number {
   const n = typeof v === "string" ? Number(v) : (v as number);
