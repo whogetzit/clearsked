@@ -1,36 +1,100 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { prisma } from '../../lib/prisma';
-import { zipToLatLon } from '../../lib/zip';
-import { fetchWeather } from '../../lib/weatherkit';
-import { interpolateHourlyToMinutes, quickChartUrl, minuteScoreWithBands, bestWindowWithBands, UserBands } from '../../lib/scoring';
-import { sendMMS } from '../../lib/twilio';
+// pages/api/signup.ts
+import type { NextApiRequest, NextApiResponse } from "next";
+import { prisma } from "@/server/db";
 
-export default async function handler(req:NextApiRequest, res:NextApiResponse){
-  if(req.method!=='POST') return res.status(405).json({message:'Method not allowed'});
-  const { zip, duration, phone, prefs } = req.body || {};
-  try{
-    const { lat, lon } = zipToLatLon(String(zip));
-    const data = await fetchWeather(lat, lon, process.env.TZ || 'America/Chicago');
-    const hours = (data as any)?.forecastHourly?.hours || [];
-    const minutes = interpolateHourlyToMinutes(hours);
-    const phoneE164 = String(phone).startsWith('+')? String(phone) : '+1'+String(phone);
+// zipcodes is CJS; import like this in TS
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const zipcodes = require("zipcodes");
 
-    await prisma.subscriber.upsert({
-      where:{ phoneE164 },
-      update:{ zip:String(zip), latitude:lat, longitude:lon, durationMin:Number(duration), active:true, prefs: prefs || undefined },
-      create:{ phoneE164, zip:String(zip), latitude:lat, longitude:lon, durationMin:Number(duration), active:true, prefs: prefs || undefined }
+type Prefs = {
+  tempMin?: number;
+  tempMax?: number;
+  windMax?: number;
+  uvMax?: number;
+  aqiMax?: number;
+};
+
+function toInt(v: unknown, fallback: number): number {
+  const n = typeof v === "string" ? Number(v) : (v as number);
+  return Number.isFinite(n) ? Math.round(n as number) : fallback;
+}
+
+function normalizeE164US(input: string): string | null {
+  const digits = (input || "").replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (input.startsWith("+") && digits.length >= 10) return input;
+  return null;
+}
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  try {
+    if (req.method !== "POST") {
+      res.setHeader("Allow", ["POST"]);
+      return res.status(405).json({ message: "Method Not Allowed" });
+    }
+
+    const {
+      zip,
+      phone,
+      durationMin: dm1,
+      duration: dm2, // accept either key
+      prefs: rawPrefs,
+      deliveryHourLocal,
+      timeZone,
+    } = (req.body ?? {}) as {
+      zip?: string;
+      phone?: string;
+      durationMin?: number | string;
+      duration?: number | string;
+      prefs?: Prefs;
+      deliveryHourLocal?: number;
+      timeZone?: string;
+    };
+
+    // Basic validation
+    if (!zip || !/^\d{5}$/.test(zip)) {
+      return res.status(400).json({ message: "Invalid ZIP" });
+    }
+    const phoneE164 = phone ? normalizeE164US(phone) : null;
+    if (!phoneE164) {
+      return res.status(400).json({ message: "Invalid phone" });
+    }
+
+    // ZIP -> lat/lon
+    const z = zipcodes.lookup(zip);
+    if (!z || typeof z.latitude !== "number" || typeof z.longitude !== "number") {
+      return res.status(400).json({ message: "ZIP not found" });
+    }
+
+    // Duration: prefer durationMin, fallback to duration, default 60
+    const durationInt = toInt(dm1 ?? dm2, 60);
+
+    // Clean prefs (optional) and tuck delivery/timeZone inside prefs for now
+    const prefs: Prefs & { deliveryHourLocal?: number; timeZone?: string } = {
+      ...(rawPrefs ?? {}),
+      ...(typeof deliveryHourLocal === "number" ? { deliveryHourLocal } : {}),
+      ...(timeZone ? { timeZone } : {}),
+    };
+
+    const data = {
+      zip,
+      latitude: z.latitude as number,
+      longitude: z.longitude as number,
+      durationMin: durationInt,
+      active: true,
+      prefs,
+    };
+
+    const out = await prisma.subscriber.upsert({
+      where: { phoneE164 },
+      update: data,
+      create: { phoneE164, ...data },
     });
 
-    const bands:UserBands = prefs?.bands;
-    const best = bestWindowWithBands(minutes, Number(duration), bands);
-    const values = minutes.map(m => Math.round(minuteScoreWithBands(m, bands)*100));
-    const labels = minutes.map((m,i)=> (i%30===0? new Date(m.t).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}):''));
-    const chartUrl = quickChartUrl(labels, values, 'Comfort — next 24h');
-
-    const body = `ClearSked signup OK for ${zip}. Best ${duration}m window: ${best.start.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}–${best.end.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})} · Score ${Math.round(best.score)}%\n— Built by ChatGPT-5 Thinking`;
-    await sendMMS(phoneE164, body, chartUrl);
-    return res.status(200).json({ message: 'Signed up! Check your phone for today’s chart.', best, chartUrl });
-  }catch(e:any){
-    return res.status(400).json({ message: e.message||'Signup failed' });
+    return res.status(200).json({ ok: true, id: out.id });
+  } catch (err: any) {
+    console.error("signup error", err);
+    return res.status(500).json({ message: err?.message ?? "Server error" });
   }
 }
