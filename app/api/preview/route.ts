@@ -30,29 +30,50 @@ type PreviewReq = {
 
 const roundInt = (x: number) => Math.round(x);
 
+// same helpers as cron route
+function minutesOfDay(date: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
+  const m = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  return h * 60 + m;
+}
+
+function daylightByLocalMinutes(
+  timeline: { time: Date }[],
+  timeZone: string,
+  dawnUTC: Date,
+  duskUTC: Date
+) {
+  const dawnM = minutesOfDay(dawnUTC, timeZone);
+  const duskM = minutesOfDay(duskUTC, timeZone);
+  const isWrapped = duskM <= dawnM;
+  const slice = timeline.filter((pt) => {
+    const mm = minutesOfDay(pt.time, timeZone);
+    return isWrapped ? mm >= dawnM || mm < duskM : mm >= dawnM && mm < duskM;
+  });
+  return { slice, dawnM, duskM, isWrapped };
+}
+
 function pickDaylightSlice(
   timeline: MinutePoint[],
   lat: number,
   lon: number,
   timeZone: string
 ) {
-  // Try dawn/dusk for (a) "now", (b) first timeline minute's day, (c) +/- 1 day from that
   const t0 = timeline[0]?.time ?? new Date();
   const DAY = 24 * 60 * 60 * 1000;
   const candidates = [new Date(), t0, new Date(t0.getTime() - DAY), new Date(t0.getTime() + DAY)];
 
   for (const d of candidates) {
     const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, d);
-    const daylight = timeline.filter((m) => m.time >= dawnUTC && m.time < duskUTC);
-    if (daylight.length > 0) {
-      return {
-        daylight,
-        dawnUTC,
-        duskUTC,
-      };
-    }
+    const { slice } = daylightByLocalMinutes(timeline, timeZone, dawnUTC, duskUTC);
+    if (slice.length > 0) return { daylight: slice, dawnUTC, duskUTC };
   }
-  // If all else fails, return empty using today's dawn/dusk.
   const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, new Date());
   return { daylight: [] as MinutePoint[], dawnUTC, duskUTC };
 }
@@ -80,9 +101,7 @@ export async function POST(req: Request) {
     } catch (e: any) {
       console.error("preview(fetchWeather):", e?.message || e);
       return NextResponse.json(
-        {
-          message: `WeatherKit request failed: ${e?.message || "unknown error"}. Check WEATHERKIT_* env vars.`,
-        },
+        { message: `WeatherKit request failed: ${e?.message || "unknown error"}.` },
         { status: 502 }
       );
     }
@@ -100,24 +119,23 @@ export async function POST(req: Request) {
       });
     }
 
-    // Align dawn/dusk to the timeline day (with ±1 day fallback)
-    const { daylight, dawnUTC, duskUTC } = pickDaylightSlice(timeline, lat, lon, timeZone);
+    const picked = pickDaylightSlice(timeline, lat, lon, timeZone);
+    const daylight = picked.daylight;
 
     if (!daylight.length) {
       return NextResponse.json({
         empty: true,
-        message: "No daylight minutes available (timeline/day misalignment).",
+        message: "No daylight minutes available (local-minute filter).",
         timelineStartUTC: timeline[0].time.toISOString(),
         timelineEndUTC: timeline[timeline.length - 1].time.toISOString(),
-        dawnUTC: dawnUTC.toISOString(),
-        duskUTC: duskUTC.toISOString(),
-        dawnLocal: formatLocalTime(dawnUTC, timeZone),
-        duskLocal: formatLocalTime(duskUTC, timeZone),
+        dawnUTC: picked.dawnUTC.toISOString(),
+        duskUTC: picked.duskUTC.toISOString(),
+        dawnLocal: formatLocalTime(picked.dawnUTC, timeZone),
+        duskLocal: formatLocalTime(picked.duskUTC, timeZone),
       });
     }
 
     const winLen = Math.min(durationMin, daylight.length);
-
     const scores = daylight.map((m) => scoreMinute(m, prefs));
     const ps = new Array(scores.length + 1).fill(0);
     for (let i = 0; i < scores.length; i++) ps[i + 1] = ps[i] + scores[i];
@@ -145,13 +163,13 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({
-      dawnUTC: dawnUTC.toISOString(),
-      duskUTC: duskUTC.toISOString(),
+      dawnUTC: picked.dawnUTC.toISOString(),
+      duskUTC: picked.duskUTC.toISOString(),
       bestStartUTC: bestStartUTC.toISOString(),
       bestEndUTC: bestEndUTC.toISOString(),
       bestScore,
-      dawnLocal: formatLocalTime(dawnUTC, timeZone),
-      duskLocal: formatLocalTime(duskUTC, timeZone),
+      dawnLocal: formatLocalTime(picked.dawnUTC, timeZone),
+      duskLocal: formatLocalTime(picked.duskUTC, timeZone),
       startLocal: formatLocalTime(bestStartUTC, timeZone),
       endLocal: formatLocalTime(bestEndUTC, timeZone),
       timelineStartUTC: timeline[0].time.toISOString(),
