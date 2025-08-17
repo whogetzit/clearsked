@@ -4,14 +4,48 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /* ----------------------------- helpers/types ----------------------------- */
-type Prefs = { tempMin: number; tempMax: number; windMax: number; uvMax: number; aqiMax: number; };
+type Prefs = {
+  tempMin: number;
+  tempMax: number;
+  windMax: number;
+  uvMax: number;
+  aqiMax: number;
+  humidityMax: number;       // NEW
+  cloudCoverMax: number;     // NEW
+  precipChanceMax: number;   // NEW
+};
+
 type SportPresetKey = "running" | "cycling" | "tennis" | "kids";
 
 const SPORT_PRESETS: Record<SportPresetKey, { label: string; prefs: Prefs }> = {
-  running:  { label: "Running",  prefs: { tempMin: 45, tempMax: 68, windMax: 12, uvMax: 6, aqiMax: 100 } },
-  cycling:  { label: "Cycling",  prefs: { tempMin: 50, tempMax: 72, windMax: 14, uvMax: 7, aqiMax: 100 } },
-  tennis:   { label: "Tennis/Pickleball", prefs: { tempMin: 55, tempMax: 75, windMax: 10, uvMax: 7, aqiMax: 100 } },
-  kids:     { label: "Kids’ Play", prefs: { tempMin: 55, tempMax: 80, windMax: 10, uvMax: 5, aqiMax: 80 } },
+  running: {
+    label: "Running",
+    prefs: {
+      tempMin: 45, tempMax: 68, windMax: 12, uvMax: 6, aqiMax: 100,
+      humidityMax: 85, cloudCoverMax: 100, precipChanceMax: 30,
+    },
+  },
+  cycling: {
+    label: "Cycling",
+    prefs: {
+      tempMin: 50, tempMax: 72, windMax: 14, uvMax: 7, aqiMax: 100,
+      humidityMax: 80, cloudCoverMax: 100, precipChanceMax: 20,
+    },
+  },
+  tennis: {
+    label: "Tennis/Pickleball",
+    prefs: {
+      tempMin: 55, tempMax: 75, windMax: 10, uvMax: 7, aqiMax: 100,
+      humidityMax: 85, cloudCoverMax: 100, precipChanceMax: 20,
+    },
+  },
+  kids: {
+    label: "Kids’ Play",
+    prefs: {
+      tempMin: 55, tempMax: 80, windMax: 10, uvMax: 5, aqiMax: 80,
+      humidityMax: 70, cloudCoverMax: 100, precipChanceMax: 30,
+    },
+  },
 };
 
 const DURATIONS = [30, 45, 60, 90];
@@ -20,9 +54,7 @@ function detectLocalTZ() {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago"; }
   catch { return "America/Chicago"; }
 }
-
 function isZipValid(zip: string) { return /^\d{5}$/.test(zip); }
-
 function digitsOnly(s: string) { return s.replace(/\D/g, ""); }
 function formatPhoneDisplay(d: string) {
   const x = digitsOnly(d);
@@ -115,9 +147,9 @@ function DeliveryTimeSelect({ timeZone, valueHour, onChange }: { timeZone: strin
   );
 }
 
-/** sample comfort chart with colored bands */
+/** sample comfort chart (unchanged) */
 function SampleChart() {
-  const scores = [28, 35, 48, 62, 74, 87, 92, 90, 84, 70, 52, 40]; // demo data
+  const scores = [28, 35, 48, 62, 74, 87, 92, 90, 84, 70, 52, 40];
   const width = 360, height = 100, pad = 8;
   const step = (width - pad * 2) / (scores.length - 1);
   const pts = scores.map((s, i) => {
@@ -128,12 +160,10 @@ function SampleChart() {
   return (
     <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff", display: "inline-block" }}>
       <svg width={width} height={height} role="img" aria-label="Sample comfort chart">
-        {/* bands */}
         <rect x={0} y={0} width={width} height={height} fill="#fff" />
-        <rect x={0} y={height * 0.0} width={width} height={height * 0.33} fill="#fee2e2" />   {/* red zone (0–33) */}
-        <rect x={0} y={height * 0.33} width={width} height={height * 0.34} fill="#fef3c7" /> {/* yellow (33–66) */}
-        <rect x={0} y={height * 0.67} width={width} height={height * 0.33} fill="#dcfce7" />  {/* green (66–100) */}
-        {/* line */}
+        <rect x={0} y={height * 0.0} width={width} height={height * 0.33} fill="#fee2e2" />
+        <rect x={0} y={height * 0.33} width={width} height={height * 0.34} fill="#fef3c7" />
+        <rect x={0} y={height * 0.67} width={width} height={height * 0.33} fill="#dcfce7" />
         <polyline fill="none" stroke="#0f172a" strokeWidth={2} points={pts} strokeLinejoin="round" strokeLinecap="round" />
       </svg>
       <div style={{ fontSize: 12, color: "#475569", marginTop: 8 }}>
@@ -145,21 +175,33 @@ function SampleChart() {
 
 /* ---------------------------------- page ---------------------------------- */
 export default function Page() {
-  // steps
   const [step, setStep] = useState<1 | 2 | 3>(1);
+
   // zip + preview
-  const [zip, setZip] = useState(""); const [zipPreview, setZipPreview] = useState<string | null>(null); const [zipBusy, setZipBusy] = useState(false);
+  const [zip, setZip] = useState("");
+  const [zipPreview, setZipPreview] = useState<string | null>(null);
+  const [zipBusy, setZipBusy] = useState(false);
+
   // duration + delivery
   const [duration, setDuration] = useState<number>(60);
-  const [tz, setTz] = useState("America/Chicago"); const [deliveryHour, setDeliveryHour] = useState(5);
-  // phone (masked) + prefs
+  const [tz, setTz] = useState("America/Chicago");
+  const [deliveryHour, setDeliveryHour] = useState(5);
+
+  // phone (masked)
   const [phoneDigits, setPhoneDigits] = useState(""); const phoneDisplay = formatPhoneDisplay(phoneDigits);
+
+  // presets + sliders
   const [preset, setPreset] = useState<SportPresetKey>("running");
   const [prefs, setPrefs] = useState<Prefs>(SPORT_PRESETS.running.prefs);
+
   // submission
-  const [submitting, setSubmitting] = useState(false); const [submitError, setSubmitError] = useState<string | null>(null); const [ok, setOk] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+
   // bot traps
-  const [hp, setHp] = useState(""); const [startedAt] = useState<number>(() => Date.now());
+  const [hp, setHp] = useState("");
+  const [startedAt] = useState<number>(() => Date.now());
 
   useEffect(() => { setPrefs(SPORT_PRESETS[preset].prefs); }, [preset]);
   useEffect(() => { setTz(detectLocalTZ()); }, []);
@@ -197,8 +239,8 @@ export default function Page() {
         phone: phoneE164,
         deliveryHourLocal: deliveryHour,
         timeZone: tz,
-        prefs,
-        hp, // honeypot (must be empty)
+        prefs, // includes all sliders
+        hp,
       };
 
       const r = await fetch("/api/signup", {
@@ -225,7 +267,7 @@ export default function Page() {
           We text you the best time to train—custom to your weather prefs.
         </h1>
         <p style={{ fontSize: 18, color: "#475569", marginTop: 12 }}>
-          Pick your temperature, wind, and UV ranges. We score every minute from <strong>0–100</strong> and text your best window every morning.
+          Pick your temperature, wind, UV, humidity and more. We score every minute from <strong>0–100</strong> and text your best window every morning.
         </p>
         <ul style={{ listStyle: "none", padding: 0, margin: "16px 0 0", display: "flex", gap: 16, color: "#334155", flexWrap: "wrap", fontSize: 14 }}>
           <li>• No app</li><li>• No login</li><li>• Cancel anytime (text STOP)</li>
@@ -283,7 +325,7 @@ export default function Page() {
             </div>
           )}
 
-          {/* Step 3: Phone + Presets + Advanced + Consent */}
+          {/* Step 3: Phone + Presets + ALL Sliders + Consent */}
           {step === 3 && (
             <div style={{ display: "grid", gap: 16 }}>
               <label htmlFor="phone" style={{ fontWeight: 600 }}>Mobile number</label>
@@ -304,16 +346,24 @@ export default function Page() {
                 <SportPresets value={preset} onChange={setPreset} />
               </div>
 
-              <details style={{ marginTop: 4 }}>
-                <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced preferences (optional)</summary>
-                <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
-                  <RangeField label="Min temperature" min={-10} max={80} step={1} value={prefs.tempMin} onChange={(v) => setPrefs((p) => ({ ...p, tempMin: v }))} suffix="°F" />
-                  <RangeField label="Max temperature" min={prefs.tempMin} max={100} step={1} value={prefs.tempMax} onChange={(v) => setPrefs((p) => ({ ...p, tempMax: v }))} suffix="°F" />
-                  <RangeField label="Max wind" min={0} max={25} step={1} value={prefs.windMax} onChange={(v) => setPrefs((p) => ({ ...p, windMax: v }))} suffix=" mph" />
-                  <RangeField label="Max UV" min={0} max={11} step={1} value={prefs.uvMax} onChange={(v) => setPrefs((p) => ({ ...p, uvMax: v }))} />
-                  <RangeField label="Max AQI" min={0} max={200} step={5} value={prefs.aqiMax} onChange={(v) => setPrefs((p) => ({ ...p, aqiMax: v }))} />
-                </div>
-              </details>
+              <div style={{ display: "grid", gap: 12, marginTop: 6 }}>
+                <div style={{ fontWeight: 700, marginTop: 4 }}>Weather preferences</div>
+                {/* Temperature */}
+                <RangeField label="Min temperature" min={-10} max={80} step={1} value={prefs.tempMin} onChange={(v) => setPrefs((p) => ({ ...p, tempMin: Math.min(v, p.tempMax) }))} suffix="°F" />
+                <RangeField label="Max temperature" min={prefs.tempMin} max={100} step={1} value={prefs.tempMax} onChange={(v) => setPrefs((p) => ({ ...p, tempMax: Math.max(v, p.tempMin) }))} suffix="°F" />
+                {/* Wind */}
+                <RangeField label="Max wind" min={0} max={25} step={1} value={prefs.windMax} onChange={(v) => setPrefs((p) => ({ ...p, windMax: v }))} suffix=" mph" />
+                {/* UV */}
+                <RangeField label="Max UV" min={0} max={11} step={1} value={prefs.uvMax} onChange={(v) => setPrefs((p) => ({ ...p, uvMax: v }))} />
+                {/* AQI */}
+                <RangeField label="Max AQI" min={0} max={200} step={5} value={prefs.aqiMax} onChange={(v) => setPrefs((p) => ({ ...p, aqiMax: v }))} />
+                {/* NEW: Humidity */}
+                <RangeField label="Max humidity" min={0} max={100} step={1} value={prefs.humidityMax} onChange={(v) => setPrefs((p) => ({ ...p, humidityMax: v }))} suffix="%" />
+                {/* NEW: Cloud cover */}
+                <RangeField label="Max cloud cover" min={0} max={100} step={1} value={prefs.cloudCoverMax} onChange={(v) => setPrefs((p) => ({ ...p, cloudCoverMax: v }))} suffix="%" />
+                {/* NEW: Precip chance */}
+                <RangeField label="Max precipitation chance" min={0} max={100} step={1} value={prefs.precipChanceMax} onChange={(v) => setPrefs((p) => ({ ...p, precipChanceMax: v }))} suffix="%" />
+              </div>
 
               <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 14 }}>
                 <input required type="checkbox" />
