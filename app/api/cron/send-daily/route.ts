@@ -8,40 +8,36 @@ import { sendSms } from '@/lib/twilio';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/* ============================
-   AUTH (admin & cron)
-   ============================ */
-function isAuthorized(
-  req: Request
-): { ok: true; mode: 'admin' | 'cron' } | { ok: false; reason: string } {
+/* ============================ AUTH ============================ */
+
+type AuthResult = {
+  ok: boolean;
+  mode?: 'admin' | 'cron';
+  reason?: string;
+};
+
+function isAuthorized(req: Request): AuthResult {
   const url = new URL(req.url);
   const hdrs = headers();
   const cks = cookies();
 
-  // Load envs and trim — trailing spaces are a common gotcha.
   const adminToken = (process.env.ADMIN_TOKEN || '').trim();
-  const cronSecret =
-    ((process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET) || '').trim();
+  const cronSecret = ((process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET) || '').trim();
 
-  // All accepted ways to present tokens/secrets
   const hAdmin = (hdrs.get('x-admin-token') || '').trim();
   const qAdmin = (url.searchParams.get('token') || '').trim();
   const cAdmin = (cks.get('admin_token')?.value || '').trim();
 
   const auth = (hdrs.get('authorization') || '').trim();
-  const bearer = auth.toLowerCase().startsWith('bearer ')
-    ? auth.slice(7).trim()
-    : '';
+  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
 
   const hCron = (hdrs.get('x-cron-secret') || '').trim();
   const qCron = (url.searchParams.get('secret') || '').trim();
 
-  // Prefer admin if provided & matches
-  if (adminToken && [hAdmin, qAdmin, cAdmin, bearer].some(v => v && v === adminToken)) {
+  if (adminToken && [hAdmin, qAdmin, cAdmin, bearer].some((v) => v && v === adminToken)) {
     return { ok: true, mode: 'admin' };
   }
-  // Else allow cron
-  if (cronSecret && [hCron, qCron, bearer].some(v => v && v === cronSecret)) {
+  if (cronSecret && [hCron, qCron, bearer].some((v) => v && v === cronSecret)) {
     return { ok: true, mode: 'cron' };
   }
 
@@ -63,10 +59,11 @@ function isAuthorized(
   };
 }
 
-/* ============================
-   DATE/TIME HELPERS
-   ============================ */
-function pad2(n: number) { return n < 10 ? `0${n}` : `${n}`; }
+/* ======================= DATE/TIME HELPERS ===================== */
+
+function pad2(n: number) {
+  return n < 10 ? `0${n}` : `${n}`;
+}
 
 function localParts(d: Date, tz: string) {
   const fmt = new Intl.DateTimeFormat('en-US', {
@@ -79,23 +76,19 @@ function localParts(d: Date, tz: string) {
     hour12: false,
   });
   const parts = fmt.formatToParts(d);
-  const get = (t: string) => Number(parts.find(p => p.type === t)?.value || '0');
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value || '0');
   return {
     y: get('year'),
     m: get('month'),
     d: get('day'),
     hh: get('hour'),
     mm: get('minute'),
-    key: `${get('year')}-${pad2(get('month'))}-${pad2(get('day'))}`, // YYYY-MM-DD
+    key: `${get('year')}-${pad2(get('month'))}-${pad2(get('day'))}`,
   };
 }
 
 function fmtLocalHM(d: Date, tz: string) {
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(d);
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(d);
 }
 
 function startOfLocalDayKey(d: Date, tz: string) {
@@ -105,20 +98,19 @@ function startOfLocalDayKey(d: Date, tz: string) {
 function hourToken(d: Date, tz: string) {
   const p = localParts(d, tz);
   const h12 = (p.hh % 12) || 12;
-  return `${h12}${p.hh < 12 ? 'a' : 'p'}`; // e.g., "5a", "6p"
+  return `${h12}${p.hh < 12 ? 'a' : 'p'}`;
 }
 
-/* ============================
-   WEATHER NORMALIZATION
-   ============================ */
+/* ======================= WEATHER PARSERS ======================= */
+
 type HourSample = {
   time: Date;
   temperature?: number;
   windSpeed?: number;
   uvIndex?: number;
-  humidity?: number;     // 0-1 or 0-100
+  humidity?: number; // 0-1 or 0-100
   precipChance?: number; // 0-1 or 0-100
-  cloudCover?: number;   // 0-1 or 0-100
+  cloudCover?: number; // 0-1 or 0-100
   aqi?: number;
 };
 
@@ -134,78 +126,64 @@ function normalize01(x: number | undefined) {
 }
 
 function extractHourly(w: any): HourSample[] {
-  const hours: any[] =
-    w?.forecastHourly?.hours ??
-    w?.forecastHourly?.forecast ??
-    w?.forecastHourly ??
-    [];
+  const hours: any[] = w?.forecastHourly?.hours ?? w?.forecastHourly?.forecast ?? w?.forecastHourly ?? [];
 
   return hours
     .map((h: any) => {
-      const tIso =
-        h?.forecastStart?.toString?.() ??
-        h?.startTime?.toString?.() ??
-        h?.time?.toString?.();
+      const tIso = h?.forecastStart?.toString?.() ?? h?.startTime?.toString?.() ?? h?.time?.toString?.();
       const time = tIso ? new Date(tIso) : new Date(NaN);
 
       const temperature =
-        asNumber(h?.temperature) ??
-        asNumber(h?.temperatureApparent) ??
-        asNumber(h?.temperatureMin) ??
-        undefined;
+        asNumber(h?.temperature) ?? asNumber(h?.temperatureApparent) ?? asNumber(h?.temperatureMin) ?? undefined;
 
       const windSpeed = asNumber(h?.windSpeed) ?? asNumber(h?.wind?.speed);
       const uvIndex = asNumber(h?.uvIndex) ?? asNumber(h?.uvIndexForecast);
 
-      const humidity =
-        normalize01(asNumber(h?.humidity)) ??
-        normalize01(asNumber(h?.relativeHumidity)) ??
-        undefined;
+      const humidity = normalize01(asNumber(h?.humidity)) ?? normalize01(asNumber(h?.relativeHumidity)) ?? undefined;
 
       const precipChance =
         normalize01(asNumber(h?.precipitationChance)) ??
         normalize01(asNumber(h?.precipitationProbability)) ??
         undefined;
 
-      const cloudCover =
-        normalize01(asNumber(h?.cloudCover)) ??
-        normalize01(asNumber(h?.cloudAmount)) ??
-        undefined;
+      const cloudCover = normalize01(asNumber(h?.cloudCover)) ?? normalize01(asNumber(h?.cloudAmount)) ?? undefined;
 
       const aqi = asNumber(h?.airQualityIndex) ?? undefined;
 
       return { time, temperature, windSpeed, uvIndex, humidity, precipChance, cloudCover, aqi };
     })
-    .filter(h => !Number.isNaN(h.time.getTime()));
+    .filter((h) => !Number.isNaN(h.time.getTime()));
 }
 
 function extractSunTimes(w: any, tz: string, targetKey: string) {
-  const days: any[] =
-    w?.forecastDaily?.days ??
-    w?.forecastDaily?.forecast ??
-    w?.forecastDaily ??
-    [];
+  const days: any[] = w?.forecastDaily?.days ?? w?.forecastDaily?.forecast ?? w?.forecastDaily ?? [];
 
   let sunriseISO: string | undefined;
   let sunsetISO: string | undefined;
 
   for (const d of days) {
-    const rises = [
-      d?.sunrise, d?.sunriseTime, d?.sunriseEpoch, d?.sunriseISO, d?.sunriseDate, d?.solar?.sunrise,
-    ].filter(Boolean).map(String);
-    const sets = [
-      d?.sunset, d?.sunsetTime, d?.sunsetEpoch, d?.sunsetISO, d?.sunsetDate, d?.solar?.sunset,
-    ].filter(Boolean).map(String);
+    const rises = [d?.sunrise, d?.sunriseTime, d?.sunriseEpoch, d?.sunriseISO, d?.sunriseDate, d?.solar?.sunrise]
+      .filter(Boolean)
+      .map(String);
+    const sets = [d?.sunset, d?.sunsetTime, d?.sunsetEpoch, d?.sunsetISO, d?.sunsetDate, d?.solar?.sunset]
+      .filter(Boolean)
+      .map(String);
 
     let sr: Date | undefined;
     for (const s of rises) {
       const dd = new Date(s);
-      if (!Number.isNaN(dd.getTime()) && localParts(dd, tz).key === targetKey) { sr = dd; break; }
+      if (!Number.isNaN(dd.getTime()) && localParts(dd, tz).key === targetKey) {
+        sr = dd;
+        break;
+      }
     }
     let ss: Date | undefined;
     for (const s of sets) {
       const dd = new Date(s);
-      if (!Number.isNaN(dd.getTime()) && localParts(dd, tz).key === targetKey) { ss = dd; break; }
+      if (!Number.isNaN(dd.getTime()) && localParts(dd, tz).key === targetKey) {
+        ss = dd;
+        break;
+      }
     }
     if (sr || ss) {
       sunriseISO = sr?.toISOString();
@@ -220,13 +198,17 @@ function extractSunTimes(w: any, tz: string, targetKey: string) {
   };
 }
 
-/* ============================
-   SCORING
-   ============================ */
+/* =========================== SCORING =========================== */
+
 type Prefs = {
-  tempMin?: number; tempMax?: number;
-  windMax?: number; uvMax?: number; aqiMax?: number;
-  humidityMax?: number; precipMax?: number; cloudMax?: number;
+  tempMin?: number;
+  tempMax?: number;
+  windMax?: number;
+  uvMax?: number;
+  aqiMax?: number;
+  humidityMax?: number;
+  precipMax?: number;
+  cloudMax?: number;
 };
 
 function scorePoint(h: HourSample, prefs: Prefs): number {
@@ -266,28 +248,29 @@ function scorePoint(h: HourSample, prefs: Prefs): number {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-function findBestWindow(
-  samples: (HourSample & { score: number })[],
-  durationMin: number,
-  tz: string
-) {
+function findBestWindow(samples: (HourSample & { score: number })[], durationMin: number, tz: string) {
   const k = Math.max(1, Math.round(durationMin / 60));
   if (samples.length === 0) return null;
 
   let bestSum = -1;
   let bestIdx = -1;
-
   for (let i = 0; i + k - 1 < samples.length; i++) {
     // ensure 1h spacing
     let contiguous = true;
     for (let j = 1; j < k; j++) {
       const diff = samples[i + j].time.getTime() - samples[i + j - 1].time.getTime();
-      if (Math.abs(diff - 3600_000) > 5 * 60 * 1000) { contiguous = false; break; }
+      if (Math.abs(diff - 3600_000) > 5 * 60 * 1000) {
+        contiguous = false;
+        break;
+      }
     }
     if (!contiguous) continue;
 
     const sum = samples.slice(i, i + k).reduce((acc, s) => acc + (s.score ?? 0), 0);
-    if (sum > bestSum) { bestSum = sum; bestIdx = i; }
+    if (sum > bestSum) {
+      bestSum = sum;
+      bestIdx = i;
+    }
   }
   if (bestIdx < 0) return null;
 
@@ -296,7 +279,9 @@ function findBestWindow(
   const avgScore = Math.round(bestSum / k);
 
   return {
-    start, end, avgScore,
+    start,
+    end,
+    avgScore,
     repr: samples[bestIdx],
     startHM: fmtLocalHM(start, tz),
     endHM: fmtLocalHM(end, tz),
@@ -305,9 +290,8 @@ function findBestWindow(
   };
 }
 
-/* ============================
-   CHART URL (QuickChart)
-   ============================ */
+/* ======================= CHART (QuickChart) ==================== */
+
 function buildChartUrl(args: {
   tz: string;
   daylight: (HourSample & { score: number })[];
@@ -319,10 +303,10 @@ function buildChartUrl(args: {
 }) {
   const { tz, daylight, dawnIdx, duskIdx, bestStartIdx, bestEndIdx, title } = args;
 
-  const labels = daylight.map(h => hourToken(h.time, tz));
-  const temps = daylight.map(h => (h.temperature !== undefined ? Math.round(h.temperature) : null));
+  const labels = daylight.map((h) => hourToken(h.time, tz));
+  const temps = daylight.map((h) => (h.temperature !== undefined ? Math.round(h.temperature) : null));
 
-  const clamp = (x: number) => Math.max(0, Math.min(labels.length - 1, x));
+  const clamp = (i: number) => Math.max(0, Math.min(labels.length - 1, i));
   const _dawn = clamp(dawnIdx);
   const _dusk = clamp(duskIdx);
   const _b0 = clamp(bestStartIdx);
@@ -371,7 +355,7 @@ function buildChartUrl(args: {
               type: 'box',
               xMin: _b0,
               xMax: _b1,
-              backgroundColor: 'rgba(16, 185, 129, 0.18)',
+              backgroundColor: 'rgba(16, 185, 129, 0.18)', // emerald-500 @ 18%
               borderWidth: 0,
             },
           },
@@ -394,24 +378,23 @@ function buildChartUrl(args: {
     h: '450',
     backgroundColor: 'white',
     devicePixelRatio: '2',
-    // Include annotation plugin:
     plugins: 'chartjs-plugin-annotation',
   });
 
   return `${base}?${params.toString()}`;
 }
 
-/* ============================
-   MAIN HANDLER
-   ============================ */
+/* =========================== HANDLER =========================== */
+
 export async function GET(req: Request) {
   const auth = isAuthorized(req);
   if (!auth.ok) {
-    return NextResponse.json({ ok: false, error: auth.reason }, { status: 401 });
+    return NextResponse.json({ ok: false, error: auth.reason ?? 'unauthorized (cron/admin)' }, { status: 401 });
   }
 
   const url = new URL(req.url);
-  const dry = url.searchParams.get('dry') === '1' || !url.searchParams.get('send');
+  const dry = url.searchParams.get('dry') === '1' || !url.searchParams.get('send'); // default dry unless send=1
+  const force = url.searchParams.get('force') === '1'; // force bypasses deliveryHourLocal check
   const onlyPhone = url.searchParams.get('phone') || undefined;
 
   let sent = 0;
@@ -425,39 +408,55 @@ export async function GET(req: Request) {
   );
 
   try {
-    // Select only universally-present columns to avoid schema drift issues
-    const baseSelect = {
+    // Select only universally-present columns; use prefs for optional fields
+    const selectBase = {
       phoneE164: true,
       active: true,
       zip: true,
       latitude: true,
       longitude: true,
       durationMin: true,
-      prefs: true,
-      lastSentAt: true,
       createdAt: true,
+      lastSentAt: true,
+      prefs: true,
     } as const;
 
-    const subs = await prisma.subscriber.findMany({
-      where: {
-        active: true,
-        ...(onlyPhone ? { phoneE164: onlyPhone } : {}),
-      },
-      select: baseSelect,
-    });
+    let subs: Array<{
+      phoneE164: string;
+      active: boolean;
+      zip: string;
+      latitude: number | null;
+      longitude: number | null;
+      durationMin: number | null;
+      createdAt: Date;
+      lastSentAt: Date | null;
+      prefs: any | null;
+    }> = [];
+
+    if (onlyPhone) {
+      subs = await prisma.subscriber.findMany({
+        where: { phoneE164: onlyPhone, active: true },
+        take: 1,
+        select: selectBase,
+      });
+    } else {
+      subs = await prisma.subscriber.findMany({
+        where: { active: true },
+        select: selectBase,
+      });
+    }
 
     const nowUTC = new Date();
 
     for (const s of subs) {
       try {
-        const p: any = s.prefs ?? {};
+        const p = s.prefs ?? {};
         const tz: string = p.timeZone ?? 'America/Chicago';
-        const deliveryHourLocal: number | undefined = p.deliveryHourLocal ?? undefined;
+        const deliveryHourLocal: number | undefined = typeof p.deliveryHourLocal === 'number' ? p.deliveryHourLocal : undefined;
 
         const partsNow = localParts(nowUTC, tz);
 
-        // When forcing a single phone, bypass the delivery-hour check.
-        if (!onlyPhone && typeof deliveryHourLocal === 'number' && deliveryHourLocal !== partsNow.hh) {
+        if (!onlyPhone && !force && typeof deliveryHourLocal === 'number' && deliveryHourLocal !== partsNow.hh) {
           details.push({
             phone: s.phoneE164,
             tz,
@@ -477,17 +476,16 @@ export async function GET(req: Request) {
 
         const weather = await fetchWeather(s.latitude, s.longitude, tz);
 
-        // Current local day key
+        // Filter hourly samples to today's local day
         const dayKey = startOfLocalDayKey(nowUTC, tz);
         const hourlyAll = extractHourly(weather);
-        const hourlyToday = hourlyAll.filter(h => localParts(h.time, tz).key === dayKey);
+        const hourlyToday = hourlyAll.filter((h) => localParts(h.time, tz).key === dayKey);
 
-        // Civil dawn/dusk from daily (fallbacks below)
+        // Civil dawn/dusk
         let { sunrise, sunset } = extractSunTimes(weather, tz, dayKey);
-
-        // Fallback if missing: UV>0 window, else 06–18 heuristic
         if (!sunrise || !sunset) {
-          const daylightGuess = hourlyToday.filter(h => (h.uvIndex ?? 0) > 0);
+          // fallback by UV>0 window or 06–18
+          const daylightGuess = hourlyToday.filter((h) => (h.uvIndex ?? 0) > 0);
           if (daylightGuess.length > 0) {
             sunrise = daylightGuess[0].time;
             sunset = daylightGuess[daylightGuess.length - 1].time;
@@ -495,8 +493,8 @@ export async function GET(req: Request) {
             const any = hourlyToday[0]?.time ?? nowUTC;
             const lp = localParts(any, tz);
             const findAt = (hh: number) =>
-              hourlyToday.find(h => localParts(h.time, tz).hh === hh)?.time
-              ?? new Date(any.getTime() + (hh - lp.hh) * 3600_000);
+              hourlyToday.find((h) => localParts(h.time, tz).hh === hh)?.time ??
+              new Date(any.getTime() + (hh - lp.hh) * 3600_000);
             sunrise = findAt(6);
             sunset = findAt(18);
           }
@@ -505,8 +503,8 @@ export async function GET(req: Request) {
         const dawnLocal = sunrise ? fmtLocalHM(sunrise, tz) : '';
         const duskLocal = sunset ? fmtLocalHM(sunset, tz) : '';
 
-        // Constrain to daylight (inclusive)
-        const daylight = hourlyToday.filter(h => {
+        // Constrain to daylight hours inclusive
+        const daylight = hourlyToday.filter((h) => {
           if (!sunrise || !sunset) return true;
           const t = h.time.getTime();
           return t >= +sunrise && t <= +sunset;
@@ -525,7 +523,7 @@ export async function GET(req: Request) {
           continue;
         }
 
-        // Preferences (from prefs JSON)
+        // Prefs
         const prefs: Prefs = {
           tempMin: p.tempMin ?? undefined,
           tempMax: p.tempMax ?? undefined,
@@ -538,12 +536,13 @@ export async function GET(req: Request) {
         };
 
         // Score daylight
-        const scored: (HourSample & { score: number })[] =
-          daylight.map(h => ({ ...h, score: scorePoint(h, prefs) }));
+        const scored: (HourSample & { score: number })[] = daylight.map((h) => ({
+          ...h,
+          score: scorePoint(h, prefs),
+        }));
 
         const durationMin = Math.max(30, Number(s.durationMin ?? 60) || 60);
         const best = findBestWindow(scored, durationMin, tz);
-
         if (!best) {
           details.push({
             phone: s.phoneE164,
@@ -572,8 +571,8 @@ export async function GET(req: Request) {
           [tempStr, windStr, uvStr, humStr, precipStr].filter(Boolean).join(' · ') +
           `\n— ClearSked (reply STOP to cancel)`;
 
-        // Build chart URL (indices relative to daylight array)
-        const dawnIdx = 0; // daylight begins at dawn
+        // Build chart URL (indices relative to daylight)
+        const dawnIdx = 0;
         const duskIdx = Math.max(0, daylight.length - 1);
         const title = `Best ${durationMin}m ${best.startHM}–${best.endHM} (Score ${best.avgScore})`;
         const chartUrl = buildChartUrl({
@@ -604,11 +603,7 @@ export async function GET(req: Request) {
             });
           } else {
             try {
-              await sendSms(
-                s.phoneE164,
-                smsPreview,
-                chartUrl ? [chartUrl] : undefined
-              );
+              await sendSms(s.phoneE164, smsPreview, chartUrl ? [chartUrl] : undefined);
               sent++;
               await prisma.subscriber.update({
                 where: { phoneE164: s.phoneE164 },
@@ -662,10 +657,7 @@ export async function GET(req: Request) {
           });
         }
       } catch (inner: any) {
-        details.push({
-          phone: (s as any)?.phoneE164,
-          error: inner?.message || 'subscriber processing failed',
-        });
+        details.push({ phone: (s as any)?.phoneE164, error: inner?.message || 'subscriber processing failed' });
       }
     }
 
@@ -677,9 +669,6 @@ export async function GET(req: Request) {
       details,
     });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: e?.message || 'server error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: e?.message || 'server error' }, { status: 500 });
   }
 }
