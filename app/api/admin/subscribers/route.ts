@@ -1,11 +1,29 @@
 // app/api/admin/subscribers/route.ts
 import { NextResponse } from 'next/server';
 import { headers, cookies } from 'next/headers';
-import { env } from '@/lib/env';
 import { prisma } from '@/server/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+// Read the admin token from env at runtime
+function getAdminToken(): string | undefined {
+  return (process.env.ADMIN_TOKEN || '').trim() || undefined;
+}
+
+// Accept token from header, query, or cookie
+function getProvidedToken(req: Request): string | undefined {
+  const url = new URL(req.url);
+  const hdrs = headers();
+  const fromHeader = hdrs.get('x-admin-token') || '';
+  const fromQuery = url.searchParams.get('token') || '';
+  const fromCookie = cookies().get('admin_token')?.value || '';
+  const auth = hdrs.get('authorization') || '';
+  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
+
+  return (fromHeader || fromQuery || fromCookie || bearer || '').trim() || undefined;
+}
 
 function maskPhone(phone: string) {
   if (!phone) return '';
@@ -15,122 +33,46 @@ function maskPhone(phone: string) {
   return '*'.repeat(Math.max(0, phone.length - 2)) + phone.slice(-2);
 }
 
-function coalesce<T>(a: T | null | undefined, b: T | null | undefined): T | undefined {
-  return (a ?? b) ?? undefined;
-}
-
 export async function GET(req: Request) {
   try {
-    const url = new URL(req.url);
-    const limitRaw = url.searchParams.get('limit') ?? '50';
-    const mask = url.searchParams.get('mask') ?? '1';
-
-    // --- AUTH: header OR query OR cookie ---
-    const hdr = headers();
-    const tokenHeader = hdr.get('x-admin-token') ?? undefined;
-    const tokenQuery = url.searchParams.get('token') ?? undefined;
-    const tokenCookie = cookies().get('admin_token')?.value ?? undefined;
-    const provided = tokenHeader ?? tokenQuery ?? tokenCookie;
-
-    if (!env.ADMIN_TOKEN || provided !== env.ADMIN_TOKEN) {
+    // --- auth ---
+    const adminToken = getAdminToken();
+    const provided = getProvidedToken(req);
+    if (!adminToken || provided !== adminToken) {
       return NextResponse.json({ ok: false, error: 'unauthorized (admin)' }, { status: 401 });
     }
 
-    const limit = Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 50));
+    const url = new URL(req.url);
+    const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
+    const mask = (url.searchParams.get('mask') || '1') === '1';
 
-    let subs: any[] = [];
-    let mode: 'new' | 'legacy' = 'new';
+    // Select without specifying fields so this works regardless of your current schema
+    const subs = await prisma.subscriber.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
 
-    // --- Try querying with the NEW columns first ---
-    try {
-      subs = await prisma.subscriber.findMany({
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-        select: {
-          phoneE164: true,
-          active: true,
-          zip: true,
-          latitude: true,
-          longitude: true,
-          durationMin: true,
+    // Shape for table
+    const rows = subs.map((s: any) => {
+      // read from columns if present, else fall back to prefs JSON
+      const p = s.prefs ?? {};
+      const phone = mask ? maskPhone(s.phoneE164) : s.phoneE164;
 
-          // new columns (present in upgraded schema)
-          timeZone: true,
-          deliveryHourLocal: true,
-
-          createdAt: true,
-          lastSentAt: true,
-
-          // explicit preference columns
-          prefTempMin: true,
-          prefTempMax: true,
-          prefWindMax: true,
-          prefUvMax: true,
-          prefAqiMax: true,
-          prefHumidityMax: true,
-          prefPrecipMax: true,
-          prefCloudMax: true,
-
-          // keep prefs as fallback
-          prefs: true,
-        },
-      });
-      mode = 'new';
-    } catch {
-      // Falls back if DB doesn't have the columns yet
-      subs = await prisma.subscriber.findMany({
-        orderBy: { createdAt: 'desc' },
-        take: limit,
-        select: {
-          phoneE164: true,
-          active: true,
-          zip: true,
-          latitude: true,
-          longitude: true,
-          durationMin: true,
-          createdAt: true,
-          lastSentAt: true,
-          prefs: true, // legacy JSON holds timeZone, deliveryHourLocal, thresholds
-        },
-      });
-      mode = 'legacy';
-    }
-
-    const rows = subs.map((s) => {
-      const p: any = s.prefs ?? {};
       return {
-        phone: mask === '1' ? maskPhone(s.phoneE164) : s.phoneE164,
-        active: s.active,
-        zip: s.zip,
+        phone,
+        active: !!s.active,
+        zip: s.zip || undefined,
         latitude: s.latitude ?? undefined,
         longitude: s.longitude ?? undefined,
         durationMin: s.durationMin ?? undefined,
-
-        timeZone:
-          mode === 'new' ? (s.timeZone ?? p.timeZone ?? undefined) : (p.timeZone ?? undefined),
-        deliveryHourLocal:
-          mode === 'new'
-            ? ((s.deliveryHourLocal ?? p.deliveryHourLocal) ?? undefined)
-            : (p.deliveryHourLocal ?? undefined),
-
-        createdAt: (s as any).createdAt?.toISOString?.() ?? (s as any).createdAt,
-        lastSentAt: s.lastSentAt ? ((s.lastSentAt as any).toISOString?.() ?? s.lastSentAt) : null,
-
-        // Normalize preference keys used by Admin UI
-        tempMin: coalesce(s.prefTempMin, p.tempMin),
-        tempMax: coalesce(s.prefTempMax, p.tempMax),
-        windMax: coalesce(s.prefWindMax, p.windMax),
-        uvMax: coalesce(s.prefUvMax, p.uvMax),
-        aqiMax: coalesce(s.prefAqiMax, p.aqiMax),
-        humidityMax: coalesce(s.prefHumidityMax, p.humidityMax),
-        precipMax: coalesce(s.prefPrecipMax, p.precipMax),
-        cloudMax: coalesce(s.prefCloudMax, p.cloudMax),
-
-        _mode: mode, // helpful for debugging
-      };
+        timeZone: s.timeZone ?? p.timeZone ?? undefined,
+        deliveryHourLocal: s.deliveryHourLocal ?? p.deliveryHourLocal ?? undefined,
+        createdAt: s.createdAt ? new Date(s.createdAt).toISOString() : undefined,
+        lastSentAt: s.lastSentAt ? new Date(s.lastSentAt).toISOString() : null,
+      } as const;
     });
 
-    return NextResponse.json({ ok: true, count: rows.length, rows, mode });
+    return NextResponse.json({ ok: true, count: rows.length, rows });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || 'server error' }, { status: 500 });
   }
