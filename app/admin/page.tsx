@@ -1,323 +1,209 @@
-"use client";
+'use client';
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 type Row = {
-  id: string;
-  createdAt: string;
-  phoneE164: string | null;
-  phoneMasked: string | null;
-  zip: string;
-  durationMin: number;
+  phone: string;
   active: boolean;
-  lastSentAt: string | null;
-  prefs: any;
+  zip: string;
+  latitude?: number;
+  longitude?: number;
+  durationMin?: number;
+  timeZone?: string;
+  deliveryHourLocal?: number | string;
+  createdAt?: string;
+  lastSentAt?: string;
+  tempMin?: number;
+  tempMax?: number;
+  windMax?: number;
+  uvMax?: number;
+  aqiMax?: number;
+  humidityMax?: number;
+  precipMax?: number;
+  cloudMax?: number;
 };
 
 function rowsToCsv(rows: Row[]) {
   const headers = [
-    "id",
-    "createdAt",
-    "phoneE164",
-    "zip",
-    "durationMin",
-    "active",
-    "lastSentAt",
-    "prefs",
+    'phone','active','zip','latitude','longitude','durationMin',
+    'timeZone','deliveryHourLocal','createdAt','lastSentAt',
+    'tempMin','tempMax','windMax','uvMax','aqiMax','humidityMax','precipMax','cloudMax'
   ];
-
-  const esc = (v: unknown): string => {
-    if (v === null || v === undefined) return "";
-    if (typeof v === "object") v = JSON.stringify(v);
-    let s = String(v);
-    if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
-    return s;
+  const esc = (v: any) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-
-  const lines: string[] = [];
-  lines.push(headers.join(","));
-  for (const r of rows) {
-    lines.push(
-      [
-        r.id,
-        new Date(r.createdAt).toISOString(),
-        r.phoneE164 ?? "",
-        r.zip,
-        r.durationMin,
-        r.active ? "true" : "false",
-        r.lastSentAt ? new Date(r.lastSentAt).toISOString() : "",
-        r.prefs ? JSON.stringify(r.prefs) : "",
-      ]
-        .map(esc)
-        .join(",")
-    );
-  }
-  return lines.join("\r\n");
+  const lines = [headers.join(','), ...rows.map(r => headers.map(h => esc((r as any)[h])).join(','))];
+  return lines.join('\n');
 }
 
 export default function AdminPage() {
-  const [key, setKey] = useState("");
-  const [limit, setLimit] = useState(50);
-  const [rows, setRows] = useState<Row[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const sp = useSearchParams();
 
+  // Admin token handling
+  const tokenFromUrl = sp.get('token') ?? '';
+  const [token, setToken] = useState<string>('');
   useEffect(() => {
-    const saved = localStorage.getItem("ADMIN_KEY");
-    if (saved) setKey(saved);
-  }, []);
+    // prefer URL token if present; otherwise use remembered one
+    const remembered = typeof window !== 'undefined' ? localStorage.getItem('admin_token') ?? '' : '';
+    const initial = tokenFromUrl || remembered;
+    if (initial) {
+      setToken(initial);
+      try { localStorage.setItem('admin_token', initial); } catch {}
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tokenFromUrl]);
 
-  const canFetch = useMemo(() => key.trim().length > 0, [key]);
+  const [limit, setLimit] = useState<string>('50');
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  const fetchRows = async () => {
-    if (!canFetch) return;
+  async function loadSubs() {
     setLoading(true);
     setErr(null);
-    setRows(null);
     try {
-      const res = await fetch(`/api/admin/subscribers?limit=${limit}`, {
-        headers: { "x-admin-key": key.trim() },
-        cache: "no-store",
+      const headers: HeadersInit = {};
+      // Pass the token via header if we have it; if you used /admin/login, cookie will also work
+      if (token) headers['x-admin-token'] = token;
+
+      const res = await fetch(`/api/admin/subscribers?limit=${encodeURIComponent(limit)}`, {
+        headers,
+        cache: 'no-store',
       });
-      if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setRows(json.rows as Row[]);
-      localStorage.setItem("ADMIN_KEY", key.trim());
+      const data = await res.json();
+      if (!res.ok || data?.ok === false) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+      // Expecting shape { ok: true, count, rows: [...] }
+      setRows(data.rows ?? []);
     } catch (e: any) {
-      setErr(e?.message ?? "Failed to fetch");
+      setErr(e?.message || 'load failed');
+      setRows([]);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const exportCsvClient = () => {
-    if (!rows || rows.length === 0) return;
+  // Client-side CSV export (current table)
+  function exportCsvClient() {
+    if (!rows.length) return;
     const csv = rowsToCsv(rows);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const a = document.createElement('a');
+    const yyyymmdd = new Date().toISOString().slice(0,10).replace(/-/g,'');
     a.href = url;
-    a.download = `subscribers-${ts}.csv`;
-    document.body.appendChild(a);
+    a.download = `clearsked-subscribers-${yyyymmdd}.csv`;
     a.click();
-    a.remove();
     URL.revokeObjectURL(url);
-  };
+  }
 
-  const exportCsvServer = async () => {
-    try {
-      const res = await fetch(`/api/admin/subscribers.csv?limit=${limit}`, {
-        headers: { "x-admin-key": key.trim() },
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      const ts = new Date().toISOString().replace(/[:.]/g, "-");
-      a.href = url;
-      a.download = `subscribers-${ts}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e: any) {
-      setErr(e?.message ?? "CSV download failed");
-    }
-  };
+  // Server-side export URL — include ?token= when we have it
+  const serverCsvHref = useMemo(() => {
+    const base = '/api/admin/export?mask=1';
+    return token ? `${base}&token=${encodeURIComponent(token)}` : base;
+  }, [token]);
 
   return (
-    <main style={{ padding: 24 }}>
+    <main style={{ padding: 24, maxWidth: 860, margin: '0 auto' }}>
       <h1 style={{ margin: 0 }}>Admin — Subscribers</h1>
-      <p style={{ color: "#475569" }}>View and export website submissions.</p>
+      <p style={{ color: '#475569' }}>View and export website submissions.</p>
 
-      <div style={{ display: "grid", gap: 12, maxWidth: 520, margin: "12px 0 20px" }}>
-        <label style={{ display: "grid", gap: 6 }}>
-          <span style={{ fontWeight: 600 }}>Admin key</span>
+      <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Admin key</span>
           <input
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="Enter ADMIN_KEY"
-            style={{ padding: 10, borderRadius: 8, border: "1px solid #e5e7eb" }}
-          />
-        </label>
-
-        <label style={{ display: "grid", gap: 6 }}>
-          <span style={{ fontWeight: 600 }}>Limit</span>
-          <input
-            type="number"
-            min={1}
-            max={2000}
-            value={limit}
-            onChange={(e) => setLimit(Number(e.target.value))}
-            style={{ width: 140, padding: 10, borderRadius: 8, border: "1px solid #e5e7eb" }}
-          />
-          <span style={{ fontSize: 12, color: "#64748b" }}>
-            Used for query and server CSV export.
-          </span>
-        </label>
-
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button
-            onClick={fetchRows}
-            disabled={!canFetch || loading}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "1px solid transparent",
-              background: canFetch && !loading ? "#0f172a" : "#cbd5e1",
-              color: "#fff",
-              cursor: canFetch && !loading ? "pointer" : "not-allowed",
+            value={token}
+            onChange={(e) => {
+              setToken(e.target.value);
+              try { localStorage.setItem('admin_token', e.target.value); } catch {}
             }}
-          >
-            {loading ? "Loading…" : "Load submissions"}
+            placeholder="paste ?token= value or leave empty if you used /admin/login"
+            style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8 }}
+          />
+        </label>
+
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Limit</span>
+          <input
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            placeholder="50"
+            style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, maxWidth: 140 }}
+          />
+        </label>
+
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <button onClick={loadSubs} disabled={loading}
+            style={{ padding: '10px 14px', borderRadius: 8, background: '#0f172a', color: 'white', border: 0 }}>
+            {loading ? 'Loading…' : 'Load submissions'}
           </button>
 
-          <button
-            onClick={exportCsvClient}
-            disabled={!rows || rows.length === 0}
-            title={!rows ? "Load rows first" : "Export the rows currently loaded"}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "1px solid #e5e7eb",
-              background: "#fff",
-              color: "#0f172a",
-              cursor: rows && rows.length > 0 ? "pointer" : "not-allowed",
-            }}
-          >
+          <button onClick={exportCsvClient} disabled={!rows.length}
+            style={{ padding: '10px 14px', borderRadius: 8, background: '#e2e8f0', border: 0 }}>
             Export CSV (current)
           </button>
 
-          <button
-            onClick={exportCsvServer}
-            disabled={!canFetch}
-            title="Download CSV directly from server"
-            style={{
-              padding: "10px 14px",
-              borderRadius: 8,
-              border: "1px solid #e5e7eb",
-              background: "#fff",
-              color: "#0f172a",
-              cursor: canFetch ? "pointer" : "not-allowed",
-            }}
-          >
+          <a href={serverCsvHref}
+            style={{ padding: '10px 14px', borderRadius: 8, background: '#e2e8f0', textDecoration: 'none', color: '#0f172a' }}>
             Export CSV (server)
-          </button>
-
-          {rows && (
-            <div style={{ alignSelf: "center", color: "#475569" }}>
-              {rows.length} row(s) loaded
-            </div>
-          )}
+          </a>
         </div>
 
         {err && (
-          <div
-            role="alert"
-            style={{
-              background: "#fef2f2",
-              border: "1px solid #fecaca",
-              color: "#991b1b",
-              padding: 10,
-              borderRadius: 8,
-            }}
-          >
-            {err}
+          <div style={{ background: '#fee2e2', color: '#991b1b', padding: 12, borderRadius: 8 }}>
+            {JSON.stringify({ ok: false, error: err })}
+          </div>
+        )}
+
+        {!err && rows.length > 0 && (
+          <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+              <thead>
+                <tr>
+                  {[
+                    'phone','active','zip','durationMin','timeZone','deliveryHourLocal',
+                    'createdAt','lastSentAt','tempMin','tempMax','windMax','uvMax','aqiMax',
+                    'humidityMax','precipMax','cloudMax'
+                  ].map((h) => (
+                    <th key={h} style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i}>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.phone}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{String(r.active)}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.zip}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.durationMin ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.timeZone ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.deliveryHourLocal ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.createdAt ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.lastSentAt ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.tempMin ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.tempMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.windMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.uvMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.aqiMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.humidityMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.precipMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.cloudMax ?? ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
 
-      {rows && (
-        <div style={{ overflowX: "auto" }}>
-          <table
-            style={{
-              width: "100%",
-              borderCollapse: "collapse",
-              background: "#fff",
-              border: "1px solid #e5e7eb",
-              borderRadius: 8,
-            }}
-          >
-            <thead>
-              <tr style={{ background: "#f8fafc" }}>
-                {[
-                  "createdAt",
-                  "phone",
-                  "zip",
-                  "durationMin",
-                  "active",
-                  "lastSentAt",
-                  "prefs",
-                  "id",
-                ].map((h) => (
-                  <th
-                    key={h}
-                    style={{
-                      textAlign: "left",
-                      padding: 10,
-                      borderBottom: "1px solid #e5e7eb",
-                      fontWeight: 600,
-                      fontSize: 13,
-                    }}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id}>
-                  <td style={{ padding: 10, borderTop: "1px solid #f1f5f9" }}>
-                    {new Date(r.createdAt).toLocaleString()}
-                  </td>
-                  <td style={{ padding: 10, borderTop: "1px solid #f1f5f9" }}>
-                    {r.phoneMasked ?? r.phoneE164}
-                  </td>
-                  <td style={{ padding: 10, borderTop: "1px solid #f1f5f9" }}>
-                    {r.zip}
-                  </td>
-                  <td style={{ padding: 10, borderTop: "1px solid #f1f5f9" }}>
-                    {r.durationMin}
-                  </td>
-                  <td style={{ padding: 10, borderTop: "1px solid #f1f5f9" }}>
-                    {r.active ? "yes" : "no"}
-                  </td>
-                  <td style={{ padding: 10, borderTop: "1px solid #f1f5f9" }}>
-                    {r.lastSentAt ? new Date(r.lastSentAt).toLocaleString() : "—"}
-                  </td>
-                  <td
-                    style={{
-                      padding: 10,
-                      borderTop: "1px solid #f1f5f9",
-                      maxWidth: 320,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                      fontSize: 12,
-                    }}
-                    title={JSON.stringify(r.prefs)}
-                  >
-                    {JSON.stringify(r.prefs)}
-                  </td>
-                  <td
-                    style={{
-                      padding: 10,
-                      borderTop: "1px solid #f1f5f9",
-                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-                      fontSize: 12,
-                    }}
-                  >
-                    {r.id}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <footer style={{ marginTop: 48, color: '#64748b' }}>
+        © {new Date().getFullYear()} ClearSked · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
+      </footer>
     </main>
   );
 }
