@@ -12,7 +12,6 @@ const Schema = z.object({
   WEATHERKIT_KEY_ID: z.string().min(1),
   WEATHERKIT_P8_BASE64: z.string().min(1),
 
-  // Twilio: allow one of MS SID or FROM; we still require auth creds to use the API
   TWILIO_ACCOUNT_SID: z.string().startsWith("AC").optional(),
   TWILIO_AUTH_TOKEN: z.string().min(10).optional(),
   TWILIO_MESSAGING_SERVICE_SID: z.string().startsWith("MG").optional(),
@@ -25,7 +24,6 @@ const Schema = z.object({
 
 export const env = Schema.parse(process.env);
 
-// Optional runtime guard when actually sending SMS:
 export function assertTwilioSendReady() {
   if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
     throw new Error("Twilio creds missing");
