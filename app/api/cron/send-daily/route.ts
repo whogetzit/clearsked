@@ -9,32 +9,27 @@ import { sendSms } from '@/lib/twilio';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-/* ======================== AUTH ======================== */
-
-function readEnv(name: string): string {
-  // prefer zod-validated env, then process.env
-  return ((env as any)?.[name] ?? process.env[name] ?? '').toString().trim();
-}
-
+/* =========================
+   AUTH: admin OR cron secret
+   ========================= */
 function isAuthorized(req: Request): { ok: true; mode: 'admin' | 'cron' } | { ok: false } {
   const url = new URL(req.url);
   const hdrs = headers();
 
-  const adminToken = readEnv('ADMIN_TOKEN');
+  const adminToken = (env.ADMIN_TOKEN || '').trim();
   const cronSecret =
-    readEnv('CRON_SECRET') ||
-    readEnv('VERCEL_CRON_SECRET');
+    (process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET || '').trim();
 
-  // Admin token (header/query/cookie/bearer)
-  const hAdmin = hdrs.get('x-admin-token') || '';
-  const qAdmin = url.searchParams.get('token') || '';
-  const cAdmin = cookies().get('admin_token')?.value || '';
-  const auth = hdrs.get('authorization') || '';
+  // Admin token sources
+  const hAdmin = (hdrs.get('x-admin-token') || '').trim();
+  const qAdmin = (url.searchParams.get('token') || '').trim();
+  const cAdmin = (cookies().get('admin_token')?.value || '').trim();
+  const auth = (hdrs.get('authorization') || '').trim();
   const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
 
-  // Cron secret (header/query/bearer)
-  const hCron = hdrs.get('x-cron-secret') || '';
-  const qCron = url.searchParams.get('secret') || '';
+  // Cron secret sources
+  const hCron = (hdrs.get('x-cron-secret') || '').trim();
+  const qCron = (url.searchParams.get('secret') || '').trim();
 
   if (adminToken && (hAdmin === adminToken || qAdmin === adminToken || cAdmin === adminToken || bearer === adminToken)) {
     return { ok: true, mode: 'admin' };
@@ -45,61 +40,64 @@ function isAuthorized(req: Request): { ok: true; mode: 'admin' | 'cron' } | { ok
   return { ok: false };
 }
 
-/* ==================== DATE/TIME HELPERS ==================== */
-
-const MS_PER_HOUR = 3600_000;
-
-const fmtHM = (d: Date, tz: string) =>
-  new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(d);
-
-const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+/* =========================
+   Date/Time helpers
+   ========================= */
+function pad2(n: number) { return n < 10 ? `0${n}` : `${n}`; }
 
 function localParts(d: Date, tz: string) {
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
   });
   const parts = fmt.formatToParts(d);
   const get = (t: string) => Number(parts.find(p => p.type === t)?.value || '0');
-  const y = get('year'), m = get('month'), day = get('day'), hh = get('hour'), mm = get('minute');
-  return { y, m, d: day, hh, mm, key: `${y}-${pad2(m)}-${pad2(day)}` };
+  return {
+    y: get('year'),
+    m: get('month'),
+    d: get('day'),
+    hh: get('hour'),
+    mm: get('minute'),
+    key: `${get('year')}-${pad2(get('month'))}-${pad2(get('day'))}`,
+  };
 }
 
+function fmtLocalHM(d: Date, tz: string) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(d);
+}
+function startOfLocalDayKey(d: Date, tz: string) {
+  return localParts(d, tz).key;
+}
 function hourToken(d: Date, tz: string) {
   const p = localParts(d, tz);
   const h12 = (p.hh % 12) || 12;
   return `${h12}${p.hh < 12 ? 'a' : 'p'}`;
 }
 
-const startOfLocalDayKey = (d: Date, tz: string) => localParts(d, tz).key;
-
-/* ================= WEATHER EXTRACT / NORMALIZE ================= */
-
+/* =========================
+   Weather parsing
+   ========================= */
 type HourSample = {
   time: Date;
   temperature?: number;
   windSpeed?: number;
   uvIndex?: number;
-  humidity?: number;      // 0–1 or 0–100
-  precipChance?: number;  // 0–1 or 0–100
-  cloudCover?: number;    // 0–1 or 0–100
+  humidity?: number;       // 0–1 or 0–100
+  precipChance?: number;   // 0–1 or 0–100
+  cloudCover?: number;     // 0–1 or 0–100
   aqi?: number;
 };
 
-const asNumber = (x: any): number | undefined => {
-  const n = Number(x); return Number.isFinite(n) ? n : undefined;
-};
-
-const normalize01 = (x: number | undefined) => {
+function asNumber(x: any): number | undefined {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : undefined;
+}
+function normalize01(x?: number) {
   if (x === undefined) return undefined;
   if (x > 1) return Math.min(1, Math.max(0, x / 100));
   return Math.min(1, Math.max(0, x));
-};
+}
 
 function extractHourly(w: any): HourSample[] {
   const hours: any[] =
@@ -178,8 +176,9 @@ function extractSunTimes(w: any, tz: string, targetKey: string) {
   };
 }
 
-/* ====================== SCORING ====================== */
-
+/* =========================
+   Scoring
+   ========================= */
 type Prefs = {
   tempMin?: number; tempMax?: number;
   windMax?: number; uvMax?: number; aqiMax?: number;
@@ -224,19 +223,17 @@ function scorePoint(h: HourSample, prefs: Prefs): number {
 }
 
 function findBestWindow(samples: (HourSample & { score: number })[], durationMin: number, tz: string) {
-  // pick at least the requested duration
-  const k = Math.max(1, Math.ceil(durationMin / 60));
+  const k = Math.max(1, Math.round(durationMin / 60));
   if (samples.length === 0) return null;
 
   let bestSum = -1;
   let bestIdx = -1;
-
   for (let i = 0; i + k - 1 < samples.length; i++) {
-    // ensure contiguous 1h steps (±5min tolerance)
+    // ensure hourly spacing
     let contiguous = true;
     for (let j = 1; j < k; j++) {
       const diff = samples[i + j].time.getTime() - samples[i + j - 1].time.getTime();
-      if (Math.abs(diff - MS_PER_HOUR) > 5 * 60 * 1000) { contiguous = false; break; }
+      if (Math.abs(diff - 3600_000) > 5 * 60 * 1000) { contiguous = false; break; }
     }
     if (!contiguous) continue;
 
@@ -252,15 +249,16 @@ function findBestWindow(samples: (HourSample & { score: number })[], durationMin
   return {
     start, end, avgScore,
     repr: samples[bestIdx],
-    startHM: fmtHM(start, tz),
-    endHM: fmtHM(end, tz),
+    startHM: fmtLocalHM(start, tz),
+    endHM: fmtLocalHM(end, tz),
     startIdx: bestIdx,
     endIdx: Math.min(samples.length - 1, bestIdx + k - 1),
   };
 }
 
-/* ================== QUICKCHART URL BUILDER ================== */
-
+/* =========================
+   MMS Chart (QuickChart)
+   ========================= */
 function buildChartUrl(args: {
   tz: string;
   daylight: (HourSample & { score: number })[];
@@ -275,12 +273,10 @@ function buildChartUrl(args: {
   const labels = daylight.map(h => hourToken(h.time, tz));
   const temps = daylight.map(h => (h.temperature !== undefined ? Math.round(h.temperature) : null));
 
-  // Guarded indices
-  const clamp = (n: number) => Math.max(0, Math.min(labels.length - 1, n));
-  const _dawn = clamp(dawnIdx);
-  const _dusk = clamp(duskIdx);
-  const _b0 = clamp(bestStartIdx);
-  const _b1 = Math.max(_b0, clamp(bestEndIdx));
+  const _dawn = Math.max(0, Math.min(labels.length - 1, dawnIdx));
+  const _dusk = Math.max(0, Math.min(labels.length - 1, duskIdx));
+  const _b0 = Math.max(0, Math.min(labels.length - 1, bestStartIdx));
+  const _b1 = Math.max(_b0, Math.min(labels.length - 1, bestEndIdx));
 
   const cfg = {
     type: 'line',
@@ -325,15 +321,14 @@ function buildChartUrl(args: {
     h: '450',
     backgroundColor: 'white',
     devicePixelRatio: '2',
-    format: 'png',                           // ensure MMS-friendly PNG
-    plugins: 'chartjs-plugin-annotation',    // include annotation plugin
+    plugins: 'chartjs-plugin-annotation',
   });
-
   return `${base}?${params.toString()}`;
 }
 
-/* ========================= MAIN ========================= */
-
+/* =========================
+   Main handler
+   ========================= */
 export async function GET(req: Request) {
   const auth = isAuthorized(req);
   if (!auth.ok) {
@@ -343,6 +338,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const dry = url.searchParams.get('dry') === '1' || !url.searchParams.get('send');
   const onlyPhone = url.searchParams.get('phone') || undefined;
+  const bypassHour = url.searchParams.get('bypassHour') === '1';
 
   let sent = 0;
   let matches = 0;
@@ -355,37 +351,36 @@ export async function GET(req: Request) {
   );
 
   try {
-    // Select only columns guaranteed to exist everywhere (fallback to prefs for others)
-    const baseSelect = {
-      phoneE164: true,
-      active: true,
-      zip: true,
-      latitude: true,
-      longitude: true,
-      durationMin: true,
-      // timeZone: true,            // enable if your DB column exists
-      // deliveryHourLocal: true,   // enable if your DB column exists
-      prefs: true,
-      lastSentAt: true,
-      createdAt: true,
-    } as const;
-
-    const subs: any[] = await prisma.subscriber.findMany({
-      where: { active: true, ...(onlyPhone ? { phoneE164: onlyPhone } : {}) },
-      select: baseSelect,
-      ...(onlyPhone ? { take: 1 } : {}),
-    });
+    let subs: any[] = [];
+    if (onlyPhone) {
+      subs = await prisma.subscriber.findMany({
+        where: { phoneE164: onlyPhone, active: true },
+        take: 1,
+        select: {
+          phoneE164: true, active: true, zip: true, latitude: true, longitude: true,
+          durationMin: true, timeZone: true, deliveryHourLocal: true, prefs: true, lastSentAt: true, createdAt: true,
+        },
+      });
+    } else {
+      subs = await prisma.subscriber.findMany({
+        where: { active: true },
+        select: {
+          phoneE164: true, active: true, zip: true, latitude: true, longitude: true,
+          durationMin: true, timeZone: true, deliveryHourLocal: true, prefs: true, lastSentAt: true, createdAt: true,
+        },
+      });
+    }
 
     const nowUTC = new Date();
 
     for (const s of subs) {
       try {
         const p = s.prefs ?? {};
-        const tz: string = (s as any).timeZone ?? p.timeZone ?? 'America/Chicago';
-        const deliveryHourLocal: number | undefined = (s as any).deliveryHourLocal ?? p.deliveryHourLocal ?? undefined;
+        const tz: string = s.timeZone ?? p.timeZone ?? 'America/Chicago';
+        const deliveryHourLocal: number | undefined = (s.deliveryHourLocal ?? p.deliveryHourLocal ?? undefined);
 
         const partsNow = localParts(nowUTC, tz);
-        if (!onlyPhone && typeof deliveryHourLocal === 'number' && deliveryHourLocal !== partsNow.hh) {
+        if (!onlyPhone && !bypassHour && typeof deliveryHourLocal === 'number' && deliveryHourLocal !== partsNow.hh) {
           details.push({
             phone: s.phoneE164, tz, deliveryHourLocal, localHourNow: partsNow.hh,
             skipped: 'local hour does not match deliveryHourLocal',
@@ -402,35 +397,33 @@ export async function GET(req: Request) {
 
         const weather = await fetchWeather(s.latitude, s.longitude, tz);
 
-        // Filter hourly samples to today's local day
+        // Today's local day
         const dayKey = startOfLocalDayKey(nowUTC, tz);
         const hourlyAll = extractHourly(weather);
         const hourlyToday = hourlyAll.filter(h => localParts(h.time, tz).key === dayKey);
 
         // Civil dawn/dusk
         let { sunrise, sunset } = extractSunTimes(weather, tz, dayKey);
-
-        // Fallback guesses (UV>0 or 06–18)
         if (!sunrise || !sunset) {
           const daylightGuess = hourlyToday.filter(h => (h.uvIndex ?? 0) > 0);
           if (daylightGuess.length > 0) {
             sunrise = daylightGuess[0].time;
-            sunset  = daylightGuess[daylightGuess.length - 1].time;
+            sunset = daylightGuess[daylightGuess.length - 1].time;
           } else {
             const any = hourlyToday[0]?.time ?? nowUTC;
             const lp = localParts(any, tz);
             const findAt = (hh: number) =>
               hourlyToday.find(h => localParts(h.time, tz).hh === hh)?.time
-              ?? new Date(any.getTime() + (hh - lp.hh) * MS_PER_HOUR);
+              ?? new Date(any.getTime() + (hh - lp.hh) * 3600_000);
             sunrise = findAt(6);
-            sunset  = findAt(18);
+            sunset = findAt(18);
           }
         }
 
-        const dawnLocal = sunrise ? fmtHM(sunrise, tz) : '';
-        const duskLocal = sunset ? fmtHM(sunset, tz) : '';
+        const dawnLocal = sunrise ? fmtLocalHM(sunrise, tz) : '';
+        const duskLocal = sunset ? fmtLocalHM(sunset, tz) : '';
 
-        // Constrain to daylight (inclusive)
+        // Constrain to daylight
         const daylight = hourlyToday.filter(h => {
           if (!sunrise || !sunset) return true;
           const t = h.time.getTime();
@@ -472,13 +465,14 @@ export async function GET(req: Request) {
           continue;
         }
 
+        // SMS body + chart
         const rep = best.repr;
         const tempStr = rep.temperature !== undefined ? `${Math.round(rep.temperature)}°F` : '';
         const windStr = rep.windSpeed !== undefined ? `${Math.round(rep.windSpeed)} mph wind` : '';
-        const uvStr   = rep.uvIndex !== undefined ? `UV ${Math.round(rep.uvIndex)}` : '';
-        const hum     = rep.humidity !== undefined ? (rep.humidity <= 1 ? rep.humidity * 100 : rep.humidity) : undefined;
-        const humStr  = hum !== undefined ? `${Math.round(hum)}% RH` : '';
-        const pr      = rep.precipChance !== undefined ? (rep.precipChance <= 1 ? rep.precipChance * 100 : rep.precipChance) : undefined;
+        const uvStr = rep.uvIndex !== undefined ? `UV ${Math.round(rep.uvIndex)}` : '';
+        const hum = rep.humidity !== undefined ? (rep.humidity <= 1 ? rep.humidity * 100 : rep.humidity) : undefined;
+        const humStr = hum !== undefined ? `${Math.round(hum)}% RH` : '';
+        const pr = rep.precipChance !== undefined ? (rep.precipChance <= 1 ? rep.precipChance * 100 : rep.precipChance) : undefined;
         const precipStr = pr !== undefined ? `${Math.round(pr)}% precip` : '';
 
         const smsPreview =
@@ -487,10 +481,9 @@ export async function GET(req: Request) {
           [tempStr, windStr, uvStr, humStr, precipStr].filter(Boolean).join(' · ') +
           `\n— ClearSked (reply STOP to cancel)`;
 
-        // Indices relative to daylight array
         const dawnIdx = 0;
         const duskIdx = Math.max(0, daylight.length - 1);
-        const title   = `Best ${durationMin}m ${best.startHM}–${best.endHM} (Score ${best.avgScore})`;
+        const title = `Best ${durationMin}m ${best.startHM}–${best.endHM} (Score ${best.avgScore})`;
         const chartUrl = buildChartUrl({
           tz,
           daylight: scored,
@@ -512,15 +505,16 @@ export async function GET(req: Request) {
             });
           } else {
             try {
-              // positional args (compatible with your twilio helper)
-              await sendSms(s.phoneE164, smsPreview, chartUrl ? [chartUrl] : undefined);
+              await sendSms(
+                s.phoneE164,
+                smsPreview,
+                chartUrl ? [chartUrl] : undefined
+              );
               sent++;
-
               await prisma.subscriber.update({
                 where: { phoneE164: s.phoneE164 },
                 data: { lastSentAt: new Date() },
               });
-
               details.push({
                 phone: s.phoneE164, tz, dawnLocal, duskLocal,
                 requestedDuration: durationMin, usedDuration: durationMin,
@@ -547,7 +541,7 @@ export async function GET(req: Request) {
           });
         }
       } catch (inner: any) {
-        details.push({ phone: (s as any)?.phoneE164, error: inner?.message || 'subscriber processing failed' });
+        details.push({ phone: s?.phoneE164, error: inner?.message || 'subscriber processing failed' });
       }
     }
 
