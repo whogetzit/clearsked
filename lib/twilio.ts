@@ -1,26 +1,49 @@
 // lib/twilio.ts
-import "server-only";
-import Twilio from "twilio";
-import { env, assertTwilioSendReady } from "@/lib/env";
+type TwilioClient = {
+  messages: {
+    create: (opts: {
+      to: string;
+      body: string;
+      messagingServiceSid?: string;
+      from?: string;
+      mediaUrl?: string[]; // <-- allow MMS
+    }) => Promise<any>;
+  };
+};
 
-export function getTwilioClient() {
-  if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
-    throw new Error("Twilio credentials missing: TWILIO_ACCOUNT_SID and/or TWILIO_AUTH_TOKEN");
+let client: TwilioClient | null = null;
+
+export function getTwilioClient(): TwilioClient | null {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  if (!sid || !token) return null;
+  if (!client) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const tw = require('twilio');
+    client = tw(sid, token);
   }
-  return Twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+  return client;
 }
 
-export function getTwilioSender() {
-  if (env.TWILIO_MESSAGING_SERVICE_SID) {
-    return { messagingServiceSid: env.TWILIO_MESSAGING_SERVICE_SID };
-  }
-  if (env.TWILIO_FROM) {
-    return { from: env.TWILIO_FROM };
-  }
-  throw new Error("Twilio sender missing: set TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM");
-}
+/**
+ * Send an SMS (optionally MMS) message.
+ * Pass a single image URL as `mediaUrl` or an array of URLs.
+ */
+export async function sendSms(
+  to: string,
+  body: string,
+  mediaUrl?: string | string[],
+) {
+  const cl = getTwilioClient();
+  if (!cl) throw new Error('twilio: Twilio credentials missing: TWILIO_ACCOUNT_SID and/or TWILIO_AUTH_TOKEN');
 
-// Optional one-liner guard you can use before sending
-export function ensureTwilioReady() {
-  assertTwilioSendReady();
+  const mss = process.env.TWILIO_MESSAGING_SERVICE_SID;
+  const from = process.env.TWILIO_FROM;
+  if (!mss && !from) throw new Error('twilio: missing TWILIO_FROM or TWILIO_MESSAGING_SERVICE_SID');
+
+  const opts: any = mss ? { to, body, messagingServiceSid: mss } : { to, body, from };
+  if (mediaUrl) {
+    opts.mediaUrl = Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl];
+  }
+  return cl.messages.create(opts);
 }
