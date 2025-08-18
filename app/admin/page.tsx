@@ -2,8 +2,8 @@
 import { Suspense } from 'react';
 import AdminClient from './AdminClient';
 
-export const dynamic = 'force-dynamic'; // don't prerender
-export const revalidate = 0;            // no caching
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 export default function Page() {
   return (
