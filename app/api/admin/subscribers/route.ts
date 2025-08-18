@@ -25,7 +25,7 @@ export async function GET(req: Request) {
     const limitRaw = url.searchParams.get('limit') ?? '50';
     const mask = url.searchParams.get('mask') ?? '1';
 
-    // --- AUTH: accept header OR query OR cookie ---
+    // --- AUTH: header OR query OR cookie ---
     const hdr = headers();
     const tokenHeader = hdr.get('x-admin-token') ?? undefined;
     const tokenQuery = url.searchParams.get('token') ?? undefined;
@@ -38,38 +38,63 @@ export async function GET(req: Request) {
 
     const limit = Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 50));
 
-    // --- Query DB: select all relevant columns from upgraded schema ---
-    const subs = await prisma.subscriber.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      select: {
-        phoneE164: true,
-        active: true,
-        zip: true,
-        latitude: true,
-        longitude: true,
-        durationMin: true,
+    let subs: any[] = [];
+    let mode: 'new' | 'legacy' = 'new';
 
-        timeZone: true,
-        deliveryHourLocal: true,
+    // --- Try querying with the NEW columns first ---
+    try {
+      subs = await prisma.subscriber.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          phoneE164: true,
+          active: true,
+          zip: true,
+          latitude: true,
+          longitude: true,
+          durationMin: true,
 
-        createdAt: true,
-        lastSentAt: true,
+          // new columns (present in upgraded schema)
+          timeZone: true,
+          deliveryHourLocal: true,
 
-        // explicit preference columns
-        prefTempMin: true,
-        prefTempMax: true,
-        prefWindMax: true,
-        prefUvMax: true,
-        prefAqiMax: true,
-        prefHumidityMax: true,
-        prefPrecipMax: true,
-        prefCloudMax: true,
+          createdAt: true,
+          lastSentAt: true,
 
-        // legacy JSON for back-compat / fallback
-        prefs: true,
-      },
-    });
+          // explicit preference columns
+          prefTempMin: true,
+          prefTempMax: true,
+          prefWindMax: true,
+          prefUvMax: true,
+          prefAqiMax: true,
+          prefHumidityMax: true,
+          prefPrecipMax: true,
+          prefCloudMax: true,
+
+          // keep prefs as fallback
+          prefs: true,
+        },
+      });
+      mode = 'new';
+    } catch {
+      // Falls back if DB doesn't have the columns yet
+      subs = await prisma.subscriber.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: {
+          phoneE164: true,
+          active: true,
+          zip: true,
+          latitude: true,
+          longitude: true,
+          durationMin: true,
+          createdAt: true,
+          lastSentAt: true,
+          prefs: true, // legacy JSON holds timeZone, deliveryHourLocal, thresholds
+        },
+      });
+      mode = 'legacy';
+    }
 
     const rows = subs.map((s) => {
       const p: any = s.prefs ?? {};
@@ -81,14 +106,17 @@ export async function GET(req: Request) {
         longitude: s.longitude ?? undefined,
         durationMin: s.durationMin ?? undefined,
 
-        // Prefer DB columns, fall back to legacy prefs JSON
-        timeZone: s.timeZone ?? p.timeZone ?? undefined,
-        deliveryHourLocal: (s.deliveryHourLocal ?? p.deliveryHourLocal) ?? undefined,
+        timeZone:
+          mode === 'new' ? (s.timeZone ?? p.timeZone ?? undefined) : (p.timeZone ?? undefined),
+        deliveryHourLocal:
+          mode === 'new'
+            ? ((s.deliveryHourLocal ?? p.deliveryHourLocal) ?? undefined)
+            : (p.deliveryHourLocal ?? undefined),
 
         createdAt: (s as any).createdAt?.toISOString?.() ?? (s as any).createdAt,
         lastSentAt: s.lastSentAt ? ((s.lastSentAt as any).toISOString?.() ?? s.lastSentAt) : null,
 
-        // Normalize preference keys expected by the Admin UI
+        // Normalize preference keys used by Admin UI
         tempMin: coalesce(s.prefTempMin, p.tempMin),
         tempMax: coalesce(s.prefTempMax, p.tempMax),
         windMax: coalesce(s.prefWindMax, p.windMax),
@@ -97,10 +125,12 @@ export async function GET(req: Request) {
         humidityMax: coalesce(s.prefHumidityMax, p.humidityMax),
         precipMax: coalesce(s.prefPrecipMax, p.precipMax),
         cloudMax: coalesce(s.prefCloudMax, p.cloudMax),
+
+        _mode: mode, // helpful for debugging
       };
     });
 
-    return NextResponse.json({ ok: true, count: rows.length, rows });
+    return NextResponse.json({ ok: true, count: rows.length, rows, mode });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || 'server error' }, { status: 500 });
   }
