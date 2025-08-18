@@ -70,7 +70,14 @@ export async function GET(req: Request) {
     // (PLACE THE REST OF YOUR CURRENT IMPLEMENTATION HERE UNCHANGED)
 
     // If you want, keep returning details for debugging
-    return NextResponse.json(/* your computed JSON */);
+    // ✅ return your real result object
+return NextResponse.json({
+  ok: true,
+  method: 'GET',
+  sent,
+  matches,
+  details,
+});
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || 'server error' }, { status: 500 });
   }
