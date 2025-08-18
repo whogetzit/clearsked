@@ -1,221 +1,465 @@
 // app/api/cron/send-daily/route.ts
-import "server-only";
-import { NextResponse } from "next/server";
-import { PrismaClient } from "@prisma/client";
-import { fetchWeather } from "@/lib/weatherkit";
-import { buildTimelineFromWeatherKit } from "@/lib/weather";
-import { civilTwilightUTC, formatLocalTime } from "@/lib/solar";
-import { scoreMinute } from "@/lib/scoring";
-import type { Prefs } from "@/lib/scoring";
-import { getTwilioClient, getTwilioSender } from "@/lib/twilio";
-import { env } from "@/lib/env";
+import { NextResponse } from 'next/server';
+import { prisma } from '@/server/db';
+import { env } from '@/lib/env';
+import { fetchWeather } from '@/lib/weatherkit';
+import { sendSms } from '@/lib/twilio';
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+// ---- helpers ---------------------------------------------------------------
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-const prisma = globalForPrisma.prisma ?? new PrismaClient({ log: ["error", "warn"] });
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
-
-const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
-const localHourNow = (tz: string) =>
-  Number(new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: tz }).format(new Date()));
-const sameLocalDate = (a: Date, b: Date, tz: string) => {
-  const fmt = (d: Date) =>
-    new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
-  return fmt(a) === fmt(b);
+type Prefs = {
+  tempMin?: number; tempMax?: number;
+  windMax?: number; uvMax?: number; aqiMax?: number;
+  humidityMax?: number; precipMax?: number; cloudMax?: number;
 };
-function minutesOfDay(date: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(date);
-  const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0);
-  const m = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
-  return h * 60 + m;
+
+function fmtLocal(t: Date, tz: string) {
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz,
+  }).format(t);
 }
-function daylightByLocalMinutes(timeline: { time: Date }[], timeZone: string, dawnUTC: Date, duskUTC: Date) {
-  const dawnM = minutesOfDay(dawnUTC, timeZone);
-  const duskM = minutesOfDay(duskUTC, timeZone);
-  const isWrapped = duskM <= dawnM;
-  const slice = timeline.filter((pt) => {
-    const mm = minutesOfDay(pt.time, timeZone);
-    return isWrapped ? mm >= dawnM || mm < duskM : mm >= dawnM && mm < duskM;
+
+function toLocalDate(t: Date | string, tz: string) {
+  const d = typeof t === 'string' ? new Date(t) : t;
+  // represent local time components in tz, but keep Date instance
+  return new Date(d.toLocaleString('en-US', { timeZone: tz }));
+}
+
+function scorePoint(x: {
+  tempF?: number; windMph?: number; uv?: number; aqi?: number;
+  humidity?: number; precip?: number; cloud?: number;
+}, p: Prefs): number {
+  // Simple 0..100 scoring. Each dimension gives partial credit if within pref.
+  let s = 100;
+
+  if (typeof p.tempMin === 'number' && typeof x.tempF === 'number' && x.tempF < p.tempMin) {
+    s -= Math.min(40, (p.tempMin - x.tempF) * 2);
+  }
+  if (typeof p.tempMax === 'number' && typeof x.tempF === 'number' && x.tempF > p.tempMax) {
+    s -= Math.min(40, (x.tempF - p.tempMax) * 2);
+  }
+
+  if (typeof p.windMax === 'number' && typeof x.windMph === 'number' && x.windMph > p.windMax) {
+    s -= Math.min(25, (x.windMph - p.windMax) * 2);
+  }
+
+  if (typeof p.uvMax === 'number' && typeof x.uv === 'number' && x.uv > p.uvMax) {
+    s -= Math.min(15, (x.uv - p.uvMax) * 3);
+  }
+
+  if (typeof p.aqiMax === 'number' && typeof x.aqi === 'number' && x.aqi > p.aqiMax) {
+    s -= Math.min(20, (x.aqi - p.aqiMax) * 0.2);
+  }
+
+  if (typeof p.humidityMax === 'number' && typeof x.humidity === 'number' && x.humidity > p.humidityMax) {
+    s -= Math.min(10, (x.humidity - p.humidityMax) * 0.4);
+  }
+
+  if (typeof p.precipMax === 'number' && typeof x.precip === 'number' && x.precip > p.precipMax) {
+    s -= Math.min(30, (x.precip - p.precipMax) * 0.8);
+  }
+
+  if (typeof p.cloudMax === 'number' && typeof x.cloud === 'number' && x.cloud > p.cloudMax) {
+    s -= Math.min(10, (x.cloud - p.cloudMax) * 0.3);
+  }
+
+  return Math.max(0, Math.min(100, Math.round(s)));
+}
+
+function findBestWindow(scores: number[], stepMin: number, wantMin: number, dawnIdx: number, duskIdx: number) {
+  // Constrain to [dawnIdx, duskIdx]
+  const start = Math.max(0, dawnIdx);
+  const end = Math.min(scores.length - 1, duskIdx);
+  const windowLen = Math.max(1, Math.round(wantMin / stepMin));
+  let bestStart = start;
+  let bestAvg = -1;
+
+  for (let i = start; i + windowLen - 1 <= end; i++) {
+    let sum = 0;
+    for (let k = 0; k < windowLen; k++) sum += scores[i + k];
+    const avg = sum / windowLen;
+    if (avg > bestAvg) { bestAvg = avg; bestStart = i; }
+  }
+
+  return { bestStart, bestEnd: Math.min(end, bestStart + windowLen - 1), bestAvg: Math.round(bestAvg) };
+}
+
+// Robust extractor for WeatherKit Hourly items
+function getHourlySamples(weather: any, tz: string) {
+  const hours: any[] =
+    weather?.forecastHourly?.hours ??
+    weather?.forecastHourly?.data ??
+    weather?.forecastHourly ??
+    [];
+
+  // Use every 60 min point to keep chart compact
+  const stepMin = 60;
+
+  const t: Date[] = [];
+  const labels: string[] = [];
+  const tempF: number[] = [];
+  const windMph: number[] = [];
+  const uv: number[] = [];
+  const aqi: number[] = [];
+  const humidityPct: number[] = [];
+  const precipPct: number[] = [];
+  const cloudPct: number[] = [];
+
+  for (const h of hours) {
+    const iso = h?.forecastStart ?? h?.startTime ?? h?.time ?? h?.validTime;
+    if (!iso) continue;
+    const when = new Date(iso);
+    const ll = fmtLocal(when, tz);
+
+    const _tempF =
+      (typeof h.temperature === 'number' ? h.temperature : undefined) ??
+      (typeof h.temperatureApparent === 'number' ? h.temperatureApparent : undefined) ??
+      (typeof h.temperature?.value === 'number' ? h.temperature.value : undefined);
+
+    const _windMph =
+      (typeof h.windSpeed === 'number' ? h.windSpeed : undefined) ??
+      (typeof h.windSpeed?.value === 'number' ? h.windSpeed.value : undefined);
+
+    const _uv =
+      (typeof h.uvIndex === 'number' ? h.uvIndex : undefined) ??
+      (typeof h.uvIndex?.value === 'number' ? h.uvIndex.value : undefined);
+
+    const _aqi =
+      (typeof h.airQualityIndex === 'number' ? h.airQualityIndex : undefined) ??
+      (typeof h.airQuality?.index === 'number' ? h.airQuality.index : undefined);
+
+    const _humidity =
+      (typeof h.humidity === 'number' ? h.humidity : undefined) ??
+      (typeof h.humidity?.value === 'number' ? h.humidity.value : undefined);
+
+    const _precip =
+      (typeof h.precipitationChance === 'number' ? h.precipitationChance : undefined) ??
+      (typeof h.precipitationChance?.value === 'number' ? h.precipitationChance.value : undefined);
+
+    const _cloud =
+      (typeof h.cloudCover === 'number' ? h.cloudCover : undefined) ??
+      (typeof h.cloudCover?.value === 'number' ? h.cloudCover.value : undefined);
+
+    t.push(when);
+    labels.push(ll);
+    tempF.push(typeof _tempF === 'number' ? Math.round(_tempF) : NaN);
+    windMph.push(typeof _windMph === 'number' ? Math.round(_windMph) : NaN);
+    uv.push(typeof _uv === 'number' ? _uv : NaN);
+    aqi.push(typeof _aqi === 'number' ? _aqi : NaN);
+    humidityPct.push(typeof _humidity === 'number' ? _humidity : NaN);
+    precipPct.push(typeof _precip === 'number' ? _precip : NaN);
+    cloudPct.push(typeof _cloud === 'number' ? _cloud : NaN);
+  }
+
+  return { stepMin, t, labels, tempF, windMph, uv, aqi, humidityPct, precipPct, cloudPct };
+}
+
+function pickDawnDusk(weather: any, tz: string) {
+  // Prefer civil dawn/dusk if present in daily dataset; fallback to sunrise/sunset
+  const day = weather?.forecastDaily?.days?.[0] ?? weather?.forecastDaily?.[0];
+  const dawnIso =
+    day?.civilSunrise ?? day?.civilDawn ??
+    day?.sunrise; // fallback
+  const duskIso =
+    day?.civilSunset ?? day?.civilDusk ??
+    day?.sunset; // fallback
+  const dawn = dawnIso ? toLocalDate(dawnIso, tz) : null;
+  const dusk = duskIso ? toLocalDate(duskIso, tz) : null;
+  return { dawn, dusk };
+}
+
+function buildChartConfig(args: {
+  labels: string[];
+  tempF: number[];
+  windMph: number[];
+  scores: number[];
+  dawnIdx: number;
+  duskIdx: number;
+  bestStart: number;
+  bestEnd: number;
+  title: string;
+  subtitle?: string;
+}) {
+  const { labels, tempF, windMph, scores, dawnIdx, duskIdx, bestStart, bestEnd, title, subtitle } = args;
+
+  return {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Temp (°F)',
+          data: tempF,
+          yAxisID: 'yTemp',
+          borderWidth: 2,
+          tension: 0.3,
+          pointRadius: 0,
+        },
+        {
+          label: 'Wind (mph)',
+          data: windMph,
+          yAxisID: 'yWind',
+          borderWidth: 2,
+          tension: 0.3,
+          pointRadius: 0,
+        },
+        {
+          label: 'Score',
+          data: scores,
+          yAxisID: 'yScore',
+          borderWidth: 2,
+          tension: 0.3,
+          pointRadius: 0,
+        },
+      ],
+    },
+    options: {
+      plugins: {
+        legend: { position: 'bottom' },
+        title: { display: true, text: title, padding: { top: 6, bottom: 2 } },
+        subtitle: subtitle ? { display: true, text: subtitle } : undefined,
+        annotation: {
+          annotations: {
+            dawnLine: {
+              type: 'line',
+              xMin: dawnIdx,
+              xMax: dawnIdx,
+              borderDash: [6, 6],
+              borderWidth: 2,
+              label: { display: true, content: 'Dawn', rotation: 90, position: 'start' },
+            },
+            duskLine: {
+              type: 'line',
+              xMin: duskIdx,
+              xMax: duskIdx,
+              borderDash: [6, 6],
+              borderWidth: 2,
+              label: { display: true, content: 'Dusk', rotation: 90, position: 'end' },
+            },
+            bestBox: {
+              type: 'box',
+              xMin: bestStart,
+              xMax: bestEnd,
+              backgroundColor: 'rgba(46, 204, 113, 0.12)',
+              borderWidth: 0,
+            },
+          },
+        },
+      },
+      scales: {
+        yTemp: { position: 'left', title: { display: true, text: '°F' }, grid: { drawOnChartArea: true } },
+        yWind: { position: 'right', title: { display: true, text: 'mph' }, grid: { drawOnChartArea: false } },
+        yScore: { position: 'right', min: 0, max: 100, display: false, grid: { drawOnChartArea: false } },
+      },
+    },
+    plugins: ['annotation'],
+  };
+}
+
+async function createChartUrl(config: any) {
+  // Use QuickChart hosted image
+  const res = await fetch('https://quickchart.io/chart/create', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      width: 900,
+      height: 450,
+      backgroundColor: 'white',
+      format: 'png',
+      chart: config,
+      // Optionally: version: '4', // Chart.js v4
+    }),
   });
-  return { slice, dawnM, duskM };
-}
-function pickDaylightSlice(timeline: { time: Date }[], lat: number, lon: number, timeZone: string) {
-  const t0 = timeline[0]?.time ?? new Date();
-  const DAY = 24 * 60 * 60 * 1000;
-  const candidates = [new Date(), t0, new Date(t0.getTime() - DAY), new Date(t0.getTime() + DAY)];
-  for (const d of candidates) {
-    const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, d);
-    const { slice } = daylightByLocalMinutes(timeline, timeZone, dawnUTC, duskUTC);
-    if (slice.length > 0) return { daylight: slice, dawnUTC, duskUTC };
-  }
-  const { dawnUTC, duskUTC } = civilTwilightUTC(lat, lon, timeZone, new Date());
-  return { daylight: [] as { time: Date }[], dawnUTC, duskUTC };
+  if (!res.ok) throw new Error(`quickchart HTTP ${res.status}`);
+  const j = await res.json();
+  return j?.url as string;
 }
 
-type RunOpts = { testPhone?: string; dry?: boolean; debug?: boolean; force?: boolean };
+// ---- route ---------------------------------------------------------------
 
-async function coreRun({ testPhone, dry, debug, force }: RunOpts) {
-  const where: any = { active: true };
-  if (testPhone) where.phoneE164 = testPhone;
-
-  const subs = await prisma.subscriber.findMany({ where, take: testPhone ? 1 : undefined });
-  const out: any = { sent: 0, matches: subs.length };
-  const details: any[] = [];
-
-  for (const s of subs) {
-    const d: any = { phone: s.phoneE164 };
-    try {
-      const tz: string = (s.prefs as any)?.timeZone || (s as any).timeZone || "America/Chicago";
-      const prefs: Prefs = (s.prefs as any) || {};
-      const desiredDuration = clamp(s.durationMin || 60, 10, 240);
-      const deliveryHourLocal: number = Number((s.prefs as any)?.deliveryHourLocal ?? 5);
-
-      d.tz = tz;
-      d.deliveryHourLocal = deliveryHourLocal;
-      d.localHourNow = localHourNow(tz);
-
-      if (!testPhone && !force && localHourNow(tz) !== deliveryHourLocal) {
-        d.skipped = "local hour does not match deliveryHourLocal";
-        details.push(d);
-        continue;
-      }
-      if (!testPhone && !force && s.lastSentAt && sameLocalDate(new Date(s.lastSentAt), new Date(), tz)) {
-        d.skipped = "already sent today";
-        details.push(d);
-        continue;
-      }
-
-      const wk = await fetchWeather(s.latitude, s.longitude, tz);
-      const timeline = buildTimelineFromWeatherKit(wk, { stepMin: 1 });
-      if (!timeline.length) {
-        d.skipped = "no timeline data";
-        details.push(d);
-        continue;
-      }
-
-      const picked = pickDaylightSlice(timeline, s.latitude, s.longitude, tz);
-      d.timelineStartUTC = timeline[0].time.toISOString();
-      d.timelineEndUTC = timeline[timeline.length - 1].time.toISOString();
-      d.dawnLocal = formatLocalTime(picked.dawnUTC, tz);
-      d.duskLocal = formatLocalTime(picked.duskUTC, tz);
-
-      const daylight = picked.daylight;
-      if (!daylight.length) {
-        d.skipped = "no daylight minutes (local-minute filter)";
-        details.push(d);
-        continue;
-      }
-
-      const winLen = Math.min(desiredDuration, daylight.length);
-      d.requestedDuration = desiredDuration;
-      d.usedDuration = winLen;
-
-      const scores = daylight.map((m: any) => scoreMinute(m, prefs));
-      const ps = new Array(scores.length + 1).fill(0);
-      for (let i = 0; i < scores.length; i++) ps[i + 1] = ps[i] + scores[i];
-
-      let bestStartIdx = 0;
-      let bestAvg = -1;
-      for (let i = 0; i + winLen <= scores.length; i++) {
-        const avg = (ps[i + winLen] - ps[i]) / winLen;
-        if (avg > bestAvg) { bestAvg = avg; bestStartIdx = i; }
-      }
-
-      const bestStart = daylight[bestStartIdx].time as Date;
-      const bestEnd = new Date(bestStart.getTime() + winLen * 60_000);
-      const bestScore = Math.round(bestAvg);
-
-      const midIdx = bestStartIdx + Math.floor(winLen / 2);
-      const mid = daylight[Math.min(midIdx, daylight.length - 1)] as any;
-
-      const startLocal = formatLocalTime(bestStart, tz);
-      const endLocal = formatLocalTime(bestEnd, tz);
-
-      const parts: string[] = [];
-      if (typeof mid.tempF === "number") parts.push(`${Math.round(mid.tempF)}°F`);
-      if (typeof mid.windMph === "number") parts.push(`${Math.round(mid.windMph)} mph wind`);
-      if (typeof mid.uvIndex === "number") parts.push(`UV ${Math.round(mid.uvIndex)}`);
-      if (typeof mid.aqi === "number") parts.push(`AQI ${Math.round(mid.aqi)}`);
-      if (typeof mid.humidityPct === "number") parts.push(`${Math.round(mid.humidityPct)}% RH`);
-      if (typeof mid.precipChancePct === "number") parts.push(`${Math.round(mid.precipChancePct)}% precip`);
-
-      const durNote = winLen < desiredDuration ? ` (shortened to ${winLen} min due to limited daylight)` : "";
-      const body =
-        `Civil dawn ${d.dawnLocal} · Civil dusk ${d.duskLocal}\n` +
-        `Best ${winLen}min (daylight): ${startLocal}–${endLocal} (Score ${bestScore})${durNote}\n` +
-        `${parts.join(" · ")}\n— ClearSked (reply STOP to cancel)`;
-
-      d.startLocal = startLocal;
-      d.endLocal = endLocal;
-      d.bestScore = bestScore;
-      d.smsPreview = body;
-
-      if (dry) { d.skipped = "dry-run"; details.push(d); continue; }
-
-      try {
-        await getTwilioClient().messages.create({ ...getTwilioSender(), to: s.phoneE164, body });
-      } catch (e: any) {
-        const code = e?.code;
-        if (code === 21610) {
-          await prisma.subscriber.update({ where: { phoneE164: s.phoneE164 }, data: { active: false } });
-          d.error = "twilio: recipient opted out (21610); marked inactive";
-        } else if (code === 30034) {
-          d.error = "twilio: 10DLC unregistered (30034) — link your number to an approved A2P campaign";
-        } else if (code === 21614) {
-          d.error = "twilio: 'To' number is not a valid mobile number (21614)";
-        } else {
-          d.error = `twilio: ${e?.message || "send failed"}`;
-        }
-        details.push(d);
-        continue;
-      }
-
-      await prisma.subscriber.update({ where: { phoneE164: s.phoneE164 }, data: { lastSentAt: new Date() } });
-
-      d.sent = true;
-      details.push(d);
-      out.sent++;
-    } catch (err: any) {
-      d.error = err?.message || "unknown";
-      details.push(d);
-    }
-  }
-
-  if (debug) out.details = details;
-  return out;
-}
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const qpPhone = url.searchParams.get("phone") || undefined;
 
-  const allowManual = env.ALLOW_MANUAL_PHONE === "1";
-  if (qpPhone && !allowManual) {
-    return NextResponse.json({ ok: false, error: "manual phone override disabled" }, { status: 400 });
+  // Control flags
+  const dry = url.searchParams.get('dry') === '1' || !url.searchParams.get('send');
+  const onlyPhone = url.searchParams.get('phone') || undefined;
+
+  try {
+    // Pull candidates
+    const where: any = { active: true };
+    if (onlyPhone) where.phoneE164 = onlyPhone;
+
+    const subs = await prisma.subscriber.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        phoneE164: true,
+        zip: true,
+        latitude: true,
+        longitude: true,
+        durationMin: true,
+        timeZone: true,
+        deliveryHourLocal: true,
+        // prefs fallback (legacy)
+        prefs: true,
+        // explicit preference columns
+        prefTempMin: true,
+        prefTempMax: true,
+        prefWindMax: true,
+        prefUvMax: true,
+        prefAqiMax: true,
+        prefHumidityMax: true,
+        prefPrecipMax: true,
+        prefCloudMax: true,
+      },
+    });
+
+    const details: any[] = [];
+    let sent = 0;
+
+    for (const s of subs) {
+      const tz = s.timeZone || 'America/Chicago';
+      const localNow = toLocalDate(new Date(), tz);
+      const localHourNow = localNow.getHours();
+      const deliveryHour = s.deliveryHourLocal ?? 5;
+
+      // Skip if not matching hour unless forced one-off
+      if (!onlyPhone && localHourNow !== deliveryHour) {
+        details.push({
+          phone: s.phoneE164, tz,
+          deliveryHourLocal: deliveryHour,
+          localHourNow,
+          skipped: 'local hour does not match deliveryHourLocal',
+        });
+        continue;
+      }
+
+      // Preferences
+      const pLegacy: any = s.prefs ?? {};
+      const prefs: Prefs = {
+        tempMin: s.prefTempMin ?? pLegacy.tempMin ?? 40,
+        tempMax: s.prefTempMax ?? pLegacy.tempMax ?? 80,
+        windMax: s.prefWindMax ?? pLegacy.windMax ?? 15,
+        uvMax: s.prefUvMax ?? pLegacy.uvMax ?? 7,
+        aqiMax: s.prefAqiMax ?? pLegacy.aqiMax ?? 75,
+        humidityMax: s.prefHumidityMax ?? pLegacy.humidityMax ?? 95,
+        precipMax: s.prefPrecipMax ?? pLegacy.precipMax ?? 20,
+        cloudMax: s.prefCloudMax ?? pLegacy.cloudMax ?? 90,
+      };
+      const wantMin = Math.max(30, Math.min(240, s.durationMin ?? 60));
+
+      // Weather
+      const w = await fetchWeather(s.latitude, s.longitude, tz);
+      const { dawn, dusk } = pickDawnDusk(w, tz);
+      if (!dawn || !dusk || dusk <= dawn) {
+        details.push({
+          phone: s.phoneE164, tz, deliveryHourLocal: deliveryHour, localHourNow,
+          skipped: 'no daylight window',
+        });
+        continue;
+      }
+
+      const { stepMin, t, labels, tempF, windMph, uv, aqi, humidityPct, precipPct, cloudPct } =
+        getHourlySamples(w, tz);
+
+      // Build scores and restrict to daylight domain
+      const scores: number[] = [];
+      for (let i = 0; i < t.length; i++) {
+        scores.push(
+          scorePoint(
+            {
+              tempF: tempF[i],
+              windMph: windMph[i],
+              uv: uv[i],
+              aqi: aqi[i],
+              humidity: humidityPct[i],
+              precip: precipPct[i],
+              cloud: cloudPct[i],
+            },
+            prefs,
+          ),
+        );
+      }
+
+      // Indices for dawn/dusk in our label array
+      const idxByTime = (when: Date) => {
+        let best = 0;
+        let bestDt = Infinity;
+        for (let i = 0; i < t.length; i++) {
+          const dt = Math.abs(t[i].getTime() - when.getTime());
+          if (dt < bestDt) { bestDt = dt; best = i; }
+        }
+        return best;
+      };
+      const dawnIdx = idxByTime(dawn);
+      const duskIdx = idxByTime(dusk);
+
+      const { bestStart, bestEnd, bestAvg } = findBestWindow(scores, stepMin, wantMin, dawnIdx, duskIdx);
+      const startLocal = fmtLocal(t[bestStart], tz);
+      const endLocal = fmtLocal(t[bestEnd], tz);
+
+      // SMS body
+      const body =
+        `Civil dawn ${fmtLocal(dawn, tz)} · Civil dusk ${fmtLocal(dusk, tz)}\n` +
+        `Best ${wantMin}min (daylight): ${startLocal}–${endLocal} (Score ${bestAvg})\n` +
+        `${tempF[bestStart]}°F · ${windMph[bestStart]} mph wind · UV ${Math.round(uv[bestStart] || 0)} · ${Math.round(humidityPct[bestStart] || 0)}% RH · ${Math.round(precipPct[bestStart] || 0)}% precip\n` +
+        `— ClearSked (reply STOP to cancel)`;
+
+      // Chart config => URL (best-effort; fallback to SMS-only)
+      let chartUrl: string | undefined;
+      try {
+        const config = buildChartConfig({
+          labels,
+          tempF,
+          windMph,
+          scores,
+          dawnIdx,
+          duskIdx,
+          bestStart,
+          bestEnd,
+          title: `Today · ${s.zip} (${tz.replace('_', ' ')})`,
+          subtitle: `Best ${wantMin} min: ${startLocal}–${endLocal} · Score ${bestAvg}`,
+        });
+        chartUrl = await createChartUrl(config);
+      } catch (e) {
+        // swallow chart errors; still send SMS
+      }
+
+      if (!dry) {
+        await sendSms(s.phoneE164, body, chartUrl ? [chartUrl] : undefined);
+        sent++;
+        details.push({
+          phone: s.phoneE164, tz, deliveryHourLocal: deliveryHour, localHourNow,
+          dawnLocal: fmtLocal(dawn, tz), duskLocal: fmtLocal(dusk, tz),
+          requestedDuration: wantMin, usedDuration: wantMin,
+          startLocal, endLocal, bestScore: bestAvg,
+          mediaUrl: chartUrl || null,
+          ok: true,
+        });
+      } else {
+        details.push({
+          phone: s.phoneE164, tz, deliveryHourLocal: deliveryHour, localHourNow,
+          dawnLocal: fmtLocal(dawn, tz), duskLocal: fmtLocal(dusk, tz),
+          requestedDuration: wantMin, usedDuration: wantMin,
+          startLocal, endLocal, bestScore: bestAvg,
+          smsPreview: body,
+          chartUrl: chartUrl || null,
+          skipped: 'dry-run',
+        });
+      }
+    }
+
+    return NextResponse.json({
+      ok: true,
+      method: 'GET',
+      sent,
+      matches: subs.length,
+      details,
+    });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || 'server error' }, { status: 500 });
   }
-
-  const dry = ["1", "true"].includes(url.searchParams.get("dry") || "");
-  const debug = ["1", "true"].includes(url.searchParams.get("debug") || "");
-  const force = ["1", "true"].includes(url.searchParams.get("force") || "");
-  const result = await coreRun({ testPhone: qpPhone, dry, debug, force });
-  return NextResponse.json({ ok: true, method: "GET", ...result });
-}
-
-export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { phone?: string; dry?: boolean; debug?: boolean; force?: boolean };
-
-  const allowManual = env.ALLOW_MANUAL_PHONE === "1";
-  if (body?.phone && !allowManual) {
-    return NextResponse.json({ ok: false, error: "manual phone override disabled" }, { status: 400 });
-  }
-
-  const result = await coreRun({
-    testPhone: body?.phone,
-    dry: !!body?.dry,
-    debug: !!body?.debug,
-    force: !!body?.force,
-  });
-  return NextResponse.json({ ok: true, method: "POST", ...result });
 }
