@@ -43,15 +43,28 @@ export default function AdminClient() {
   async function loadSubs() {
     setLoading(true); setErr(null);
     try {
+      // Build URL and always append ?token= if we have it (works even if header/cookie fail)
+      const qs = new URLSearchParams({ limit });
+      if (token) qs.set('token', token);
+
       const headers: HeadersInit = {};
-      if (token) headers['x-admin-token'] = token;
-      const res = await fetch(`/api/admin/subscribers?limit=${encodeURIComponent(limit)}`, { headers, cache: 'no-store' });
+      if (token) headers['x-admin-token'] = token; // header path
+
+      const res = await fetch(`/api/admin/subscribers?${qs.toString()}`, {
+        headers,
+        cache: 'no-store',
+        credentials: 'same-origin', // ensure cookie is sent if you used /admin/login
+      });
+
       const data = await res.json();
       if (!res.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${res.status}`);
       setRows(data.rows ?? []);
     } catch (e: any) {
-      setErr(e?.message || 'load failed'); setRows([]);
-    } finally { setLoading(false); }
+      setErr(e?.message || 'load failed');
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   function exportCsvClient() {
@@ -78,7 +91,7 @@ export default function AdminClient() {
 
       <div style={{ display: 'grid', gap: 12, marginTop: 16 }}>
         <label style={{ display: 'grid', gap: 6 }}>
-          <span>Admin key</span>
+          <span>Admin token</span>
           <input
             value={token}
             onChange={(e) => { setToken(e.target.value); try { localStorage.setItem('admin_token', e.target.value); } catch {} }}
@@ -128,22 +141,22 @@ export default function AdminClient() {
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={i}>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.phone}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{String(r.active)}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.zip}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.durationMin ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.timeZone ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.deliveryHourLocal ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.createdAt ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.lastSentAt ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.tempMin ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.tempMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.windMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.uvMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.aqiMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.humidityMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.precipMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.cloudMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.phone}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{String(r.active)}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.zip}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.durationMin ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.timeZone ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.deliveryHourLocal ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.createdAt ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.lastSentAt ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.tempMin ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.tempMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.windMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.uvMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.aqiMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.humidityMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.precipMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.cloudMax ?? ''}</td>
                   </tr>
                 ))}
               </tbody>
