@@ -1,3 +1,5 @@
+// prisma/schema.prisma
+
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -8,15 +10,41 @@ generator client {
 }
 
 model Subscriber {
-  id          String   @id @default(cuid())
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  phoneE164   String   @unique
-  zip         String
-  latitude    Float
-  longitude   Float
-  durationMin Int
-  active      Boolean  @default(true)
-  lastSentAt  DateTime?
-  prefs       Json?
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Identity & status
+  phoneE164 String   @unique          // E.164 phone number, e.g. +13095551234
+  active    Boolean  @default(true)   // subscription on/off
+
+  // Location & basic prefs
+  zip       String                      // 5-digit ZIP
+  latitude  Float
+  longitude Float
+  durationMin Int                       // requested session length in minutes
+
+  // Delivery scheduling (now persisted)
+  timeZone          String?             // IANA TZ, e.g. "America/Chicago"
+  deliveryHourLocal Int?                // 0–23, hour of day to deliver
+
+  // Sending state
+  lastSentAt DateTime?
+
+  // Explicit per-dimension weather preferences (for querying/export)
+  prefTempMin     Int?                  // °F
+  prefTempMax     Int?                  // °F
+  prefWindMax     Int?                  // mph
+  prefUvMax       Int?                  // UV index
+  prefAqiMax      Int?                  // AQI
+  prefHumidityMax Int?                  // %
+  prefPrecipMax   Int?                  // %
+  prefCloudMax    Int?                  // %
+
+  // Legacy catch-all (kept for back-compat with older code paths)
+  prefs Json?
+
+  @@index([active])
+  @@index([zip])
+  @@index([deliveryHourLocal, timeZone])
 }
