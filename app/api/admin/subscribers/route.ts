@@ -1,4 +1,4 @@
-// app/api/admin/subscribers.csv/route.ts
+// app/api/admin/subscribers/route.ts
 import { NextResponse } from 'next/server';
 import { headers, cookies } from 'next/headers';
 import { prisma } from '@/server/db';
@@ -7,10 +7,10 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+// --- auth helpers ---
 function getAdminToken(): string | undefined {
   return (process.env.ADMIN_TOKEN || '').trim() || undefined;
 }
-
 function getProvidedToken(req: Request): string | undefined {
   const url = new URL(req.url);
   const hdrs = headers();
@@ -22,16 +22,17 @@ function getProvidedToken(req: Request): string | undefined {
   return (fromHeader || fromQuery || fromCookie || bearer || '').trim() || undefined;
 }
 
-function csvEscape(v: any) {
-  if (v === null || v === undefined) return '';
-  const s = String(v);
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
+function maskPhone(phone: string) {
+  if (!phone) return '';
+  if (phone.startsWith('+1') && phone.length >= 4) {
+    return '+1' + '*'.repeat(Math.max(0, phone.length - 4)) + phone.slice(-2);
+  }
+  return '*'.repeat(Math.max(0, phone.length - 2)) + phone.slice(-2);
 }
 
 export async function GET(req: Request) {
   try {
-    // --- auth ---
+    // auth
     const adminToken = getAdminToken();
     const provided = getProvidedToken(req);
     if (!adminToken || provided !== adminToken) {
@@ -39,60 +40,44 @@ export async function GET(req: Request) {
     }
 
     const url = new URL(req.url);
-    const limit = Math.max(1, Math.min(2000, parseInt(url.searchParams.get('limit') || '1000', 10) || 1000));
+    const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
     const mask = (url.searchParams.get('mask') || '1') === '1';
 
+    // SELECT ONLY COLUMNS THAT EXIST IN DB
     const subs = await prisma.subscriber.findMany({
       orderBy: { createdAt: 'desc' },
       take: limit,
+      select: {
+        phoneE164: true,
+        active: true,
+        zip: true,
+        latitude: true,
+        longitude: true,
+        durationMin: true,
+        createdAt: true,
+        lastSentAt: true,
+        prefs: true, // will contain timeZone & deliveryHourLocal if present
+      },
     });
-
-    const header = [
-      'phone',
-      'active',
-      'zip',
-      'latitude',
-      'longitude',
-      'durationMin',
-      'timeZone',
-      'deliveryHourLocal',
-      'createdAt',
-      'lastSentAt',
-    ];
 
     const rows = subs.map((s: any) => {
       const p = s.prefs ?? {};
-      const phone = mask
-        ? (s.phoneE164 ? s.phoneE164.replace(/^\+1(\d+)(\d{2})$/, (_m: any, mid: string, last: string) => '+1' + '*'.repeat(mid.length + 0) + last) : '')
-        : s.phoneE164;
-
-      const createdAt = s.createdAt ? new Date(s.createdAt).toISOString() : '';
-      const lastSentAt = s.lastSentAt ? new Date(s.lastSentAt).toISOString() : '';
-
-      return [
-        phone,
-        s.active ? 'true' : 'false',
-        s.zip ?? '',
-        s.latitude ?? '',
-        s.longitude ?? '',
-        s.durationMin ?? '',
-        s.timeZone ?? p.timeZone ?? '',
-        s.deliveryHourLocal ?? p.deliveryHourLocal ?? '',
-        createdAt,
-        lastSentAt,
-      ];
+      return {
+        phone: mask ? maskPhone(s.phoneE164) : s.phoneE164,
+        active: !!s.active,
+        zip: s.zip ?? undefined,
+        latitude: s.latitude ?? undefined,
+        longitude: s.longitude ?? undefined,
+        durationMin: s.durationMin ?? undefined,
+        // derive from prefs JSON since DB column isn't there
+        timeZone: p.timeZone ?? undefined,
+        deliveryHourLocal: p.deliveryHourLocal ?? undefined,
+        createdAt: s.createdAt ? new Date(s.createdAt).toISOString() : undefined,
+        lastSentAt: s.lastSentAt ? new Date(s.lastSentAt).toISOString() : null,
+      };
     });
 
-    const csv = [header, ...rows].map((r) => r.map(csvEscape).join(',')).join('\n');
-
-    return new NextResponse(csv, {
-      status: 200,
-      headers: {
-        'content-type': 'text/csv; charset=utf-8',
-        'cache-control': 'no-store',
-        'content-disposition': `attachment; filename="subscribers.csv"`,
-      },
-    });
+    return NextResponse.json({ ok: true, count: rows.length, rows });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || 'server error' }, { status: 500 });
   }
