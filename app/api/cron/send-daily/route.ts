@@ -1,12 +1,14 @@
 // app/api/cron/send-daily/route.ts
+import "server-only";
 import { NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
-import { fetchWeather } from "../../../../lib/weatherkit";
-import { buildTimelineFromWeatherKit } from "../../../../lib/weather";
-import { civilTwilightUTC, formatLocalTime } from "../../../../lib/solar";
-import { scoreMinute } from "../../../../lib/scoring";
-import type { Prefs } from "../../../../lib/scoring";
-import { getTwilioClient, getTwilioSender } from "../../../../lib/twilio";
+import { fetchWeather } from "@/lib/weatherkit";
+import { buildTimelineFromWeatherKit } from "@/lib/weather";
+import { civilTwilightUTC, formatLocalTime } from "@/lib/solar";
+import { scoreMinute } from "@/lib/scoring";
+import type { Prefs } from "@/lib/scoring";
+import { getTwilioClient, getTwilioSender } from "@/lib/twilio";
+import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -118,10 +120,7 @@ async function coreRun({ testPhone, dry, debug, force }: RunOpts) {
       let bestAvg = -1;
       for (let i = 0; i + winLen <= scores.length; i++) {
         const avg = (ps[i + winLen] - ps[i]) / winLen;
-        if (avg > bestAvg) {
-          bestAvg = avg;
-          bestStartIdx = i;
-        }
+        if (avg > bestAvg) { bestAvg = avg; bestStartIdx = i; }
       }
 
       const bestStart = daylight[bestStartIdx].time as Date;
@@ -153,29 +152,27 @@ async function coreRun({ testPhone, dry, debug, force }: RunOpts) {
       d.bestScore = bestScore;
       d.smsPreview = body;
 
-      if (dry) {
-        d.skipped = "dry-run";
-        details.push(d);
-        continue;
-      }
+      if (dry) { d.skipped = "dry-run"; details.push(d); continue; }
 
-      // Send SMS via Twilio (Messaging Service preferred)
       try {
-        await getTwilioClient().messages.create({
-          ...getTwilioSender(),
-          to: s.phoneE164,
-          body,
-        });
+        await getTwilioClient().messages.create({ ...getTwilioSender(), to: s.phoneE164, body });
       } catch (e: any) {
-        d.error = `twilio: ${e?.message || "send failed"}`;
+        const code = e?.code;
+        if (code === 21610) {
+          await prisma.subscriber.update({ where: { phoneE164: s.phoneE164 }, data: { active: false } });
+          d.error = "twilio: recipient opted out (21610); marked inactive";
+        } else if (code === 30034) {
+          d.error = "twilio: 10DLC unregistered (30034) — link your number to an approved A2P campaign";
+        } else if (code === 21614) {
+          d.error = "twilio: 'To' number is not a valid mobile number (21614)";
+        } else {
+          d.error = `twilio: ${e?.message || "send failed"}`;
+        }
         details.push(d);
         continue;
       }
 
-      await prisma.subscriber.update({
-        where: { phoneE164: s.phoneE164 },
-        data: { lastSentAt: new Date() },
-      });
+      await prisma.subscriber.update({ where: { phoneE164: s.phoneE164 }, data: { lastSentAt: new Date() } });
 
       d.sent = true;
       details.push(d);
@@ -192,27 +189,24 @@ async function coreRun({ testPhone, dry, debug, force }: RunOpts) {
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const phone = url.searchParams.get("phone") || undefined;
+  const qpPhone = url.searchParams.get("phone") || undefined;
 
-  // Optional: allow manual phone test only if explicitly enabled
-  const allowManual = process.env.ALLOW_MANUAL_PHONE === "1";
-  if (phone && !allowManual) {
+  const allowManual = env.ALLOW_MANUAL_PHONE === "1";
+  if (qpPhone && !allowManual) {
     return NextResponse.json({ ok: false, error: "manual phone override disabled" }, { status: 400 });
   }
 
   const dry = ["1", "true"].includes(url.searchParams.get("dry") || "");
   const debug = ["1", "true"].includes(url.searchParams.get("debug") || "");
   const force = ["1", "true"].includes(url.searchParams.get("force") || "");
-  const result = await coreRun({ testPhone: phone, dry, debug, force });
+  const result = await coreRun({ testPhone: qpPhone, dry, debug, force });
   return NextResponse.json({ ok: true, method: "GET", ...result });
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as {
-    phone?: string; dry?: boolean; debug?: boolean; force?: boolean;
-  };
+  const body = (await req.json().catch(() => ({}))) as { phone?: string; dry?: boolean; debug?: boolean; force?: boolean };
 
-  const allowManual = process.env.ALLOW_MANUAL_PHONE === "1";
+  const allowManual = env.ALLOW_MANUAL_PHONE === "1";
   if (body?.phone && !allowManual) {
     return NextResponse.json({ ok: false, error: "manual phone override disabled" }, { status: 400 });
   }
