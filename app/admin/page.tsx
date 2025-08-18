@@ -3,11 +3,10 @@ import { Suspense } from 'react';
 import AdminClient from './AdminClient';
 
 export const dynamic = 'force-dynamic';
-export const revalidate = 0;
 
-export default function Page() {
+export default function AdminPage() {
   return (
-    <Suspense fallback={<main style={{ padding: 24 }}>Loading…</main>}>
+    <Suspense fallback={<main style={{ padding: 24 }}>Loading admin…</main>}>
       <AdminClient />
     </Suspense>
   );
