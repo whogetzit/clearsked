@@ -4,46 +4,32 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 type Row = {
-  phone: string;
-  active: boolean;
-  zip: string;
-  latitude?: number;
-  longitude?: number;
-  durationMin?: number;
-  timeZone?: string;
-  deliveryHourLocal?: number | string;
-  createdAt?: string;
-  lastSentAt?: string;
-  tempMin?: number;
-  tempMax?: number;
-  windMax?: number;
-  uvMax?: number;
-  aqiMax?: number;
-  humidityMax?: number;
-  precipMax?: number;
-  cloudMax?: number;
+  phone: string; active: boolean; zip: string;
+  latitude?: number; longitude?: number; durationMin?: number;
+  timeZone?: string; deliveryHourLocal?: number | string;
+  createdAt?: string; lastSentAt?: string;
+  tempMin?: number; tempMax?: number; windMax?: number; uvMax?: number; aqiMax?: number;
+  humidityMax?: number; precipMax?: number; cloudMax?: number;
 };
 
 function rowsToCsv(rows: Row[]) {
-  const headers = [
-    'phone','active','zip','latitude','longitude','durationMin',
-    'timeZone','deliveryHourLocal','createdAt','lastSentAt',
-    'tempMin','tempMax','windMax','uvMax','aqiMax','humidityMax','precipMax','cloudMax'
-  ];
+  const headers = ['phone','active','zip','latitude','longitude','durationMin','timeZone','deliveryHourLocal','createdAt','lastSentAt','tempMin','tempMax','windMax','uvMax','aqiMax','humidityMax','precipMax','cloudMax'];
   const esc = (v: any) => {
     const s = String(v ?? '');
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const lines = [headers.join(','), ...rows.map(r => headers.map(h => esc((r as any)[h])).join(','))];
-  return lines.join('\n');
+  return [headers.join(','), ...rows.map(r => headers.map(h => esc((r as any)[h])).join(','))].join('\n');
 }
 
 export default function AdminClient() {
   const sp = useSearchParams();
-
-  // Admin token handling (URL -> state -> localStorage)
   const tokenFromUrl = sp.get('token') ?? '';
-  const [token, setToken] = useState<string>('');
+  const [token, setToken] = useState('');
+  const [limit, setLimit] = useState('50');
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
   useEffect(() => {
     const remembered = typeof window !== 'undefined' ? localStorage.getItem('admin_token') ?? '' : '';
     const initial = tokenFromUrl || remembered;
@@ -51,51 +37,35 @@ export default function AdminClient() {
       setToken(initial);
       try { localStorage.setItem('admin_token', initial); } catch {}
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tokenFromUrl]);
 
-  const [limit, setLimit] = useState<string>('50');
-  const [rows, setRows] = useState<Row[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
   async function loadSubs() {
-    setLoading(true);
-    setErr(null);
+    setLoading(true); setErr(null);
     try {
       const headers: HeadersInit = {};
-      if (token) headers['x-admin-token'] = token; // middleware expects this or cookie
-
-      const res = await fetch(`/api/admin/subscribers?limit=${encodeURIComponent(limit)}`, {
-        headers,
-        cache: 'no-store',
-      });
+      if (token) headers['x-admin-token'] = token;
+      const res = await fetch(`/api/admin/subscribers?limit=${encodeURIComponent(limit)}`, { headers, cache: 'no-store' });
       const data = await res.json();
       if (!res.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${res.status}`);
       setRows(data.rows ?? []);
     } catch (e: any) {
-      setErr(e?.message || 'load failed');
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
+      setErr(e?.message || 'load failed'); setRows([]);
+    } finally { setLoading(false); }
   }
 
-  // Client CSV export
   function exportCsvClient() {
     if (!rows.length) return;
     const csv = rowsToCsv(rows);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const yyyymmdd = new Date().toISOString().slice(0,10).replace(/-/g,'');
     a.href = url;
-    a.download = `clearsked-subscribers-${yyyymmdd}.csv`;
+    a.download = `clearsked-subscribers-${new Date().toISOString().slice(0,10).replace(/-/g,'')}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  // Server CSV link — include ?token= if we have it (if you used /admin/login cookie, it works without)
   const serverCsvHref = useMemo(() => {
     const base = '/api/admin/export?mask=1';
     return token ? `${base}&token=${encodeURIComponent(token)}` : base;
@@ -111,10 +81,7 @@ export default function AdminClient() {
           <span>Admin key</span>
           <input
             value={token}
-            onChange={(e) => {
-              setToken(e.target.value);
-              try { localStorage.setItem('admin_token', e.target.value); } catch {}
-            }}
+            onChange={(e) => { setToken(e.target.value); try { localStorage.setItem('admin_token', e.target.value); } catch {} }}
             placeholder="paste ?token= value or leave empty if you used /admin/login"
             style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8 }}
           />
@@ -122,12 +89,8 @@ export default function AdminClient() {
 
         <label style={{ display: 'grid', gap: 6 }}>
           <span>Limit</span>
-          <input
-            value={limit}
-            onChange={(e) => setLimit(e.target.value)}
-            placeholder="50"
-            style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, maxWidth: 140 }}
-          />
+          <input value={limit} onChange={(e) => setLimit(e.target.value)} placeholder="50"
+            style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, maxWidth: 140 }} />
         </label>
 
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
@@ -135,34 +98,27 @@ export default function AdminClient() {
             style={{ padding: '10px 14px', borderRadius: 8, background: '#0f172a', color: 'white', border: 0 }}>
             {loading ? 'Loading…' : 'Load submissions'}
           </button>
-
           <button onClick={exportCsvClient} disabled={!rows.length}
             style={{ padding: '10px 14px', borderRadius: 8, background: '#e2e8f0', border: 0 }}>
             Export CSV (current)
           </button>
-
           <a href={serverCsvHref}
             style={{ padding: '10px 14px', borderRadius: 8, background: '#e2e8f0', textDecoration: 'none', color: '#0f172a' }}>
             Export CSV (server)
           </a>
         </div>
 
-        {err && (
-          <div style={{ background: '#fee2e2', color: '#991b1b', padding: 12, borderRadius: 8 }}>
-            {JSON.stringify({ ok: false, error: err })}
-          </div>
-        )}
+        {err && <div style={{ background: '#fee2e2', color: '#991b1b', padding: 12, borderRadius: 8 }}>
+          {JSON.stringify({ ok: false, error: err })}
+        </div>}
 
         {!err && rows.length > 0 && (
           <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr>
-                  {[
-                    'phone','active','zip','durationMin','timeZone','deliveryHourLocal',
-                    'createdAt','lastSentAt','tempMin','tempMax','windMax','uvMax','aqiMax',
-                    'humidityMax','precipMax','cloudMax'
-                  ].map((h) => (
+                  {['phone','active','zip','durationMin','timeZone','deliveryHourLocal','createdAt','lastSentAt',
+                    'tempMin','tempMax','windMax','uvMax','aqiMax','humidityMax','precipMax','cloudMax'].map((h) => (
                     <th key={h} style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
                       {h}
                     </th>
