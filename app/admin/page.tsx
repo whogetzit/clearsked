@@ -1,7 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+
+// Make this route dynamic (avoid static export issues)
+export const dynamic = 'force-dynamic';
+// also disable caching for good measure in prod
+export const revalidate = 0;
 
 type Row = {
   phone: string;
@@ -39,20 +44,27 @@ function rowsToCsv(rows: Row[]) {
 }
 
 export default function AdminPage() {
+  return (
+    <Suspense fallback={<main style={{ padding: 24 }}>Loading…</main>}>
+      <AdminInner />
+    </Suspense>
+  );
+}
+
+function AdminInner() {
   const sp = useSearchParams();
 
   // Admin token handling
   const tokenFromUrl = sp.get('token') ?? '';
   const [token, setToken] = useState<string>('');
   useEffect(() => {
-    // prefer URL token if present; otherwise use remembered one
     const remembered = typeof window !== 'undefined' ? localStorage.getItem('admin_token') ?? '' : '';
     const initial = tokenFromUrl || remembered;
     if (initial) {
       setToken(initial);
       try { localStorage.setItem('admin_token', initial); } catch {}
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tokenFromUrl]);
 
   const [limit, setLimit] = useState<string>('50');
@@ -65,7 +77,7 @@ export default function AdminPage() {
     setErr(null);
     try {
       const headers: HeadersInit = {};
-      // Pass the token via header if we have it; if you used /admin/login, cookie will also work
+      // Pass the admin token so middleware allows /api/admin/*
       if (token) headers['x-admin-token'] = token;
 
       const res = await fetch(`/api/admin/subscribers?limit=${encodeURIComponent(limit)}`, {
@@ -73,10 +85,7 @@ export default function AdminPage() {
         cache: 'no-store',
       });
       const data = await res.json();
-      if (!res.ok || data?.ok === false) {
-        throw new Error(data?.error || `HTTP ${res.status}`);
-      }
-      // Expecting shape { ok: true, count, rows: [...] }
+      if (!res.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${res.status}`);
       setRows(data.rows ?? []);
     } catch (e: any) {
       setErr(e?.message || 'load failed');
