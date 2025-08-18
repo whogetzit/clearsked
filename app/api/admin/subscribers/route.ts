@@ -25,19 +25,20 @@ export async function GET(req: Request) {
     const limitRaw = url.searchParams.get('limit') ?? '50';
     const mask = url.searchParams.get('mask') ?? '1';
 
-    // --- AUTH (header OR query OR cookie) ---
+    // --- AUTH: accept header OR query OR cookie ---
     const hdr = headers();
     const tokenHeader = hdr.get('x-admin-token') ?? undefined;
     const tokenQuery = url.searchParams.get('token') ?? undefined;
     const tokenCookie = cookies().get('admin_token')?.value ?? undefined;
     const provided = tokenHeader ?? tokenQuery ?? tokenCookie;
+
     if (!env.ADMIN_TOKEN || provided !== env.ADMIN_TOKEN) {
       return NextResponse.json({ ok: false, error: 'unauthorized (admin)' }, { status: 401 });
     }
 
     const limit = Math.max(1, Math.min(500, parseInt(limitRaw, 10) || 50));
 
-    // IMPORTANT: Select only columns that EXIST in the current DB
+    // --- Query DB: select all relevant columns from upgraded schema ---
     const subs = await prisma.subscriber.findMany({
       orderBy: { createdAt: 'desc' },
       take: limit,
@@ -48,10 +49,25 @@ export async function GET(req: Request) {
         latitude: true,
         longitude: true,
         durationMin: true,
+
+        timeZone: true,
+        deliveryHourLocal: true,
+
         createdAt: true,
         lastSentAt: true,
-        prefs: true, // legacy JSON (may contain timeZone, deliveryHourLocal, and thresholds)
-        // DO NOT select timeZone/deliveryHourLocal here until the DB has those columns
+
+        // explicit preference columns
+        prefTempMin: true,
+        prefTempMax: true,
+        prefWindMax: true,
+        prefUvMax: true,
+        prefAqiMax: true,
+        prefHumidityMax: true,
+        prefPrecipMax: true,
+        prefCloudMax: true,
+
+        // legacy JSON for back-compat / fallback
+        prefs: true,
       },
     });
 
@@ -65,22 +81,22 @@ export async function GET(req: Request) {
         longitude: s.longitude ?? undefined,
         durationMin: s.durationMin ?? undefined,
 
-        // Read from prefs for now (since DB columns don't exist yet)
-        timeZone: p.timeZone ?? undefined,
-        deliveryHourLocal: p.deliveryHourLocal ?? undefined,
+        // Prefer DB columns, fall back to legacy prefs JSON
+        timeZone: s.timeZone ?? p.timeZone ?? undefined,
+        deliveryHourLocal: (s.deliveryHourLocal ?? p.deliveryHourLocal) ?? undefined,
 
         createdAt: (s as any).createdAt?.toISOString?.() ?? (s as any).createdAt,
         lastSentAt: s.lastSentAt ? ((s.lastSentAt as any).toISOString?.() ?? s.lastSentAt) : null,
 
-        // Normalize thresholds—prefer explicit columns later; for now, fall back to prefs
-        tempMin: coalesce(undefined, p.tempMin),
-        tempMax: coalesce(undefined, p.tempMax),
-        windMax: coalesce(undefined, p.windMax),
-        uvMax: coalesce(undefined, p.uvMax),
-        aqiMax: coalesce(undefined, p.aqiMax),
-        humidityMax: coalesce(undefined, p.humidityMax),
-        precipMax: coalesce(undefined, p.precipMax),
-        cloudMax: coalesce(undefined, p.cloudMax),
+        // Normalize preference keys expected by the Admin UI
+        tempMin: coalesce(s.prefTempMin, p.tempMin),
+        tempMax: coalesce(s.prefTempMax, p.tempMax),
+        windMax: coalesce(s.prefWindMax, p.windMax),
+        uvMax: coalesce(s.prefUvMax, p.uvMax),
+        aqiMax: coalesce(s.prefAqiMax, p.aqiMax),
+        humidityMax: coalesce(s.prefHumidityMax, p.humidityMax),
+        precipMax: coalesce(s.prefPrecipMax, p.precipMax),
+        cloudMax: coalesce(s.prefCloudMax, p.cloudMax),
       };
     });
 
