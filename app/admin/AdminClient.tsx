@@ -13,7 +13,11 @@ type Row = {
 };
 
 function rowsToCsv(rows: Row[]) {
-  const headers = ['phone','active','zip','latitude','longitude','durationMin','timeZone','deliveryHourLocal','createdAt','lastSentAt','tempMin','tempMax','windMax','uvMax','aqiMax','humidityMax','precipMax','cloudMax'];
+  const headers = [
+    'phone','active','zip','latitude','longitude','durationMin',
+    'timeZone','deliveryHourLocal','createdAt','lastSentAt',
+    'tempMin','tempMax','windMax','uvMax','aqiMax','humidityMax','precipMax','cloudMax'
+  ];
   const esc = (v: any) => {
     const s = String(v ?? '');
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -24,6 +28,7 @@ function rowsToCsv(rows: Row[]) {
 export default function AdminClient() {
   const sp = useSearchParams();
   const tokenFromUrl = sp.get('token') ?? '';
+
   const [token, setToken] = useState('');
   const [limit, setLimit] = useState('50');
   const [rows, setRows] = useState<Row[]>([]);
@@ -37,15 +42,15 @@ export default function AdminClient() {
       setToken(initial);
       try { localStorage.setItem('admin_token', initial); } catch {}
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tokenFromUrl]);
 
   async function loadSubs() {
-    setLoading(true); setErr(null);
+    setLoading(true);
+    setErr(null);
     try {
-      // Build URL and always append ?token= if we have it (works even if header/cookie fail)
       const qs = new URLSearchParams({ limit });
-      if (token) qs.set('token', token);
+      if (token) qs.set('token', token); // query path
 
       const headers: HeadersInit = {};
       if (token) headers['x-admin-token'] = token; // header path
@@ -53,7 +58,7 @@ export default function AdminClient() {
       const res = await fetch(`/api/admin/subscribers?${qs.toString()}`, {
         headers,
         cache: 'no-store',
-        credentials: 'same-origin', // ensure cookie is sent if you used /admin/login
+        credentials: 'same-origin', // send cookie if you used /admin/login
       });
 
       const data = await res.json();
@@ -102,37 +107,59 @@ export default function AdminClient() {
 
         <label style={{ display: 'grid', gap: 6 }}>
           <span>Limit</span>
-          <input value={limit} onChange={(e) => setLimit(e.target.value)} placeholder="50"
-            style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, maxWidth: 140 }} />
+          <input
+            value={limit}
+            onChange={(e) => setLimit(e.target.value)}
+            placeholder="50"
+            style={{ padding: 10, border: '1px solid #cbd5e1', borderRadius: 8, maxWidth: 140 }}
+          />
         </label>
 
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          <button onClick={loadSubs} disabled={loading}
-            style={{ padding: '10px 14px', borderRadius: 8, background: '#0f172a', color: 'white', border: 0 }}>
+          <button
+            onClick={loadSubs}
+            disabled={loading}
+            style={{ padding: '10px 14px', borderRadius: 8, background: '#0f172a', color: 'white', border: 0 }}
+          >
             {loading ? 'Loading…' : 'Load submissions'}
           </button>
-          <button onClick={exportCsvClient} disabled={!rows.length}
-            style={{ padding: '10px 14px', borderRadius: 8, background: '#e2e8f0', border: 0 }}>
+
+          <button
+            onClick={exportCsvClient}
+            disabled={!rows.length}
+            style={{ padding: '10px 14px', borderRadius: 8, background: '#e2e8f0', border: 0 }}
+          >
             Export CSV (current)
           </button>
-          <a href={serverCsvHref}
-            style={{ padding: '10px 14px', borderRadius: 8, background: '#e2e8f0', textDecoration: 'none', color: '#0f172a' }}>
+
+          <a
+            href={serverCsvHref}
+            style={{ padding: '10px 14px', borderRadius: 8, background: '#e2e8f0', textDecoration: 'none', color: '#0f172a' }}
+          >
             Export CSV (server)
           </a>
         </div>
 
-        {err && <div style={{ background: '#fee2e2', color: '#991b1b', padding: 12, borderRadius: 8 }}>
-          {JSON.stringify({ ok: false, error: err })}
-        </div>}
+        {err && (
+          <div style={{ background: '#fee2e2', color: '#991b1b', padding: 12, borderRadius: 8 }}>
+            {JSON.stringify({ ok: false, error: err })}
+          </div>
+        )}
 
         {!err && rows.length > 0 && (
           <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr>
-                  {['phone','active','zip','durationMin','timeZone','deliveryHourLocal','createdAt','lastSentAt',
-                    'tempMin','tempMax','windMax','uvMax','aqiMax','humidityMax','precipMax','cloudMax'].map((h) => (
-                    <th key={h} style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}>
+                  {[
+                    'phone','active','zip','durationMin','timeZone','deliveryHourLocal',
+                    'createdAt','lastSentAt','tempMin','tempMax','windMax','uvMax','aqiMax',
+                    'humidityMax','precipMax','cloudMax'
+                  ].map((h) => (
+                    <th
+                      key={h}
+                      style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}
+                    >
                       {h}
                     </th>
                   ))}
@@ -141,22 +168,22 @@ export default function AdminClient() {
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={i}>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.phone}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{String(r.active)}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.zip}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.durationMin ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.timeZone ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.deliveryHourLocal ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.createdAt ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.lastSentAt ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.tempMin ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.tempMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.windMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.uvMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.aqiMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.humidityMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.precipMax ?? ''}</td>
-                    <td style={{ padding: 8, borderBottom: '1px solid '#f1f5f9' }}>{r.cloudMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.phone}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{String(r.active)}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.zip}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.durationMin ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.timeZone ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.deliveryHourLocal ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.createdAt ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.lastSentAt ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.tempMin ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.tempMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.windMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.uvMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.aqiMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.humidityMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.precipMax ?? ''}</td>
+                    <td style={{ padding: 8, borderBottom: '1px solid #f1f5f9' }}>{r.cloudMax ?? ''}</td>
                   </tr>
                 ))}
               </tbody>
