@@ -535,11 +535,11 @@ export async function GET(req: Request) {
             });
           } else {
             try {
-              await sendSms({
-                to: s.phoneE164,
-                body: smsPreview,
-                mediaUrl: chartUrl ? [chartUrl] : undefined,
-              });
+              await sendSms(
+  s.phoneE164,
+  smsPreview,
+  chartUrl ? [chartUrl] : undefined
+);
               sent++;
               await prisma.subscriber.update({
                 where: { phoneE164: s.phoneE164 },
