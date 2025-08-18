@@ -1,7 +1,9 @@
 // app/api/diag/route.ts
+import "server-only";
 import { NextResponse } from "next/server";
 import Twilio from "twilio";
-import { weatherkitJWT, fetchWeather } from "../../../lib/weatherkit";
+import { env } from "@/lib/env";
+import { weatherkitJWT, fetchWeather } from "@/lib/weatherkit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,31 +11,27 @@ export const dynamic = "force-dynamic";
 const redactSid = (sid?: string) => (sid ? `${sid.slice(0, 2)}…${sid.slice(-6)}` : undefined);
 
 export async function GET() {
-  // WeatherKit envs + sanity checks
+  // WeatherKit sanity
   const weatherEnvs = {
-    TEAM_ID: !!process.env.WEATHERKIT_TEAM_ID,
-    SERVICE_ID: !!process.env.WEATHERKIT_SERVICE_ID,
-    KEY_ID: !!process.env.WEATHERKIT_KEY_ID,
-    P8_BASE64: !!process.env.WEATHERKIT_P8_BASE64,
+    TEAM_ID: !!env.WEATHERKIT_TEAM_ID,
+    SERVICE_ID: !!env.WEATHERKIT_SERVICE_ID,
+    KEY_ID: !!env.WEATHERKIT_KEY_ID,
+    P8_BASE64: !!env.WEATHERKIT_P8_BASE64,
   };
 
   let jwtOk = false;
   try { weatherkitJWT(); jwtOk = true; } catch { jwtOk = false; }
 
   let weatherOk = false, weatherErr: string | undefined;
-  try {
-    const w = await fetchWeather(40.69, -89.59, "America/Chicago");
-    weatherOk = !!w;
-  } catch (e: any) {
-    weatherOk = false; weatherErr = e?.message || "fetch failed";
-  }
+  try { await fetchWeather(40.69, -89.59, "America/Chicago"); weatherOk = true; }
+  catch (e: any) { weatherOk = false; weatherErr = e?.message || "fetch failed"; }
 
   // Twilio env flags
   const twilioEnvs = {
-    ACCOUNT_SID: !!process.env.TWILIO_ACCOUNT_SID,
-    AUTH_TOKEN: !!process.env.TWILIO_AUTH_TOKEN,
-    FROM: !!process.env.TWILIO_FROM,
-    MESSAGING_SERVICE_SID: !!process.env.TWILIO_MESSAGING_SERVICE_SID,
+    ACCOUNT_SID: !!env.TWILIO_ACCOUNT_SID,
+    AUTH_TOKEN: !!env.TWILIO_AUTH_TOKEN,
+    FROM: !!env.TWILIO_FROM,
+    MESSAGING_SERVICE_SID: !!env.TWILIO_MESSAGING_SERVICE_SID,
   };
 
   let twilioAuthOk = false;
@@ -41,31 +39,27 @@ export async function GET() {
   let accountSidRedacted: string | undefined;
 
   const messagingService = {
-    present: !!process.env.TWILIO_MESSAGING_SERVICE_SID,
+    present: !!env.TWILIO_MESSAGING_SERVICE_SID,
     ok: false,
     hasSender: false,
     name: undefined as string | undefined,
-    sid: redactSid(process.env.TWILIO_MESSAGING_SERVICE_SID),
+    sid: redactSid(env.TWILIO_MESSAGING_SERVICE_SID),
     error: undefined as string | undefined,
   };
 
   const fromNumber = {
-    present: !!process.env.TWILIO_FROM,
+    present: !!env.TWILIO_FROM,
     owned: false,
-    e164: process.env.TWILIO_FROM || undefined,
+    e164: env.TWILIO_FROM || undefined,
     error: undefined as string | undefined,
   };
 
   if (twilioEnvs.ACCOUNT_SID && twilioEnvs.AUTH_TOKEN) {
     try {
-      const client = Twilio(
-        process.env.TWILIO_ACCOUNT_SID as string,
-        process.env.TWILIO_AUTH_TOKEN as string
-      );
+      const client = Twilio(env.TWILIO_ACCOUNT_SID!, env.TWILIO_AUTH_TOKEN!);
 
-      // Auth check
       try {
-        const acct = await client.api.v2010.accounts(process.env.TWILIO_ACCOUNT_SID as string).fetch();
+        const acct = await client.api.v2010.accounts(env.TWILIO_ACCOUNT_SID!).fetch();
         twilioAuthOk = !!acct?.sid;
         accountSidRedacted = redactSid(acct?.sid);
       } catch (e: any) {
@@ -73,9 +67,8 @@ export async function GET() {
         twilioAuthErr = e?.message || "account fetch failed";
       }
 
-      // Messaging Service check
       if (messagingService.present) {
-        const mss = process.env.TWILIO_MESSAGING_SERVICE_SID as string;
+        const mss = env.TWILIO_MESSAGING_SERVICE_SID!;
         try {
           const svc = await client.messaging.v1.services(mss).fetch();
           messagingService.ok = !!svc?.sid;
@@ -93,13 +86,9 @@ export async function GET() {
         }
       }
 
-      // Direct number ownership (if using TWILIO_FROM)
       if (fromNumber.present) {
         try {
-          const list = await client.incomingPhoneNumbers.list({
-            phoneNumber: process.env.TWILIO_FROM,
-            limit: 1,
-          });
+          const list = await client.incomingPhoneNumbers.list({ phoneNumber: env.TWILIO_FROM, limit: 1 });
           fromNumber.owned = (list?.length ?? 0) > 0;
         } catch (e: any) {
           fromNumber.owned = false;
