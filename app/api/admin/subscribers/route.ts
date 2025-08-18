@@ -8,8 +8,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 function maskPhone(phone: string) {
-  // +1********21 style
   if (!phone) return '';
+  // +1********21 style
   if (phone.startsWith('+1') && phone.length >= 4) {
     return '+1' + '*'.repeat(Math.max(0, phone.length - 4)) + phone.slice(-2);
   }
@@ -46,15 +46,16 @@ export async function GET(req: Request) {
         latitude: true,
         longitude: true,
         durationMin: true,
-        timeZone: true,
-        deliveryHourLocal: true,
+        // NOTE: Remove fields not present in schema to satisfy Prisma types:
+        // timeZone: true,
+        // deliveryHourLocal: true,
         createdAt: true,
         lastSentAt: true,
         prefs: true,
       },
     });
 
-    const rows = subs.map(s => {
+    const rows = subs.map((s) => {
       const prefs = (s as any).prefs || {};
       return {
         phone: mask === '1' ? maskPhone(s.phoneE164) : s.phoneE164,
@@ -63,10 +64,11 @@ export async function GET(req: Request) {
         latitude: s.latitude ?? undefined,
         longitude: s.longitude ?? undefined,
         durationMin: s.durationMin ?? undefined,
-        timeZone: s.timeZone ?? undefined,
-        deliveryHourLocal: s.deliveryHourLocal ?? undefined,
-        createdAt: s.createdAt?.toISOString?.() ?? s.createdAt,
-        lastSentAt: s.lastSentAt ? (s.lastSentAt as Date).toISOString?.() ?? s.lastSentAt : null,
+        // These columns are not in your schema right now:
+        timeZone: undefined,
+        deliveryHourLocal: undefined,
+        createdAt: (s as any).createdAt?.toISOString?.() ?? (s as any).createdAt,
+        lastSentAt: s.lastSentAt ? ((s.lastSentAt as any).toISOString?.() ?? s.lastSentAt) : null,
         tempMin: prefs.tempMin ?? undefined,
         tempMax: prefs.tempMax ?? undefined,
         windMax: prefs.windMax ?? undefined,
