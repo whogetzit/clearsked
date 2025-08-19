@@ -1,34 +1,71 @@
 // middleware.ts
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
-import { env } from "@/lib/env";
+import type { NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
 
+/**
+ * This middleware ONLY guards:
+ *  - /admin (the page UI)
+ *  - /api/admin/* (admin APIs)
+ *
+ * It intentionally does NOT match /api/cron/*, so cron jobs are never blocked here.
+ */
 export const config = {
-  matcher: ["/api/cron/:path*", "/api/admin/:path*", "/admin", "/api/diag"],
+  matcher: [
+    '/admin/:path*',
+    '/api/admin/:path*',
+  ],
 };
 
-export function middleware(req: NextRequest) {
-  const url = new URL(req.url);
-  const path = url.pathname;
+function getPresentedAdminToken(req: NextRequest): string {
+  const url = req.nextUrl;
+  const header = req.headers.get('x-admin-token') ?? '';
+  const query  = url.searchParams.get('token') ?? '';
+  const cookie = req.cookies.get('admin_token')?.value ?? '';
+  const auth   = req.headers.get('authorization') ?? '';
+  const bearer = /^Bearer\s+/i.test(auth) ? auth.replace(/^Bearer\s+/i, '').trim() : '';
+  return header || query || cookie || bearer || '';
+}
 
-  // Protect cron routes: allow either scheduled Vercel Cron or Bearer CRON_SECRET
-  if (path.startsWith("/api/cron/")) {
-    const auth = req.headers.get("authorization");
-    const fromVercelCron = req.headers.get("x-vercel-cron");
-    const bearerOk = !!env.CRON_SECRET && auth === `Bearer ${env.CRON_SECRET}`;
-    const scheduledOk = !!fromVercelCron;
-    if (!bearerOk && !scheduledOk) {
-      return NextResponse.json({ ok: false, error: "unauthorized (cron)" }, { status: 401 });
-    }
+export default function middleware(req: NextRequest) {
+  const { pathname } = req.nextUrl;
+
+  // Allow diag to pass through without auth if you have /api/admin/diag
+  if (pathname.startsWith('/api/admin/diag')) {
+    return NextResponse.next();
   }
 
-  // Protect admin + diag with ADMIN_TOKEN (header or ?token=)
-  if (path === "/admin" || path.startsWith("/api/admin") || path === "/api/diag") {
-    const token = req.headers.get("x-admin-token") ?? url.searchParams.get("token");
-    if (!env.ADMIN_TOKEN || token !== env.ADMIN_TOKEN) {
-      return NextResponse.json({ ok: false, error: "unauthorized (admin)" }, { status: 401 });
+  const ADMIN_TOKEN = (process.env.ADMIN_TOKEN ?? '').trim();
+  if (!ADMIN_TOKEN) {
+    // If no admin token is configured, block admin surfaces by default
+    if (pathname.startsWith('/api/admin/')) {
+      return NextResponse.json({ ok: false, error: 'admin disabled (no ADMIN_TOKEN)' }, { status: 401 });
     }
+    const login = new URL('/admin', req.url);
+    login.searchParams.set('unauth', '1');
+    return NextResponse.redirect(login);
   }
 
+  const presented = getPresentedAdminToken(req);
+
+  // If hitting API under /api/admin/*
+  if (pathname.startsWith('/api/admin/')) {
+    if (presented === ADMIN_TOKEN) {
+      return NextResponse.next();
+    }
+    return NextResponse.json({ ok: false, error: 'unauthorized (admin/middleware)' }, { status: 401 });
+  }
+
+  // If hitting the /admin UI page(s)
+  if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+    if (presented === ADMIN_TOKEN) {
+      return NextResponse.next();
+    }
+    // Redirect to /admin with a hint; the UI can read ?unauth=1 and show the token box
+    const to = new URL('/admin', req.url);
+    to.searchParams.set('unauth', '1');
+    return NextResponse.redirect(to);
+  }
+
+  // Fallback (should not be reached due to matcher)
   return NextResponse.next();
 }
