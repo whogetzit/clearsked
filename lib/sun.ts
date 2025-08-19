@@ -75,4 +75,20 @@ export function hourToken(d = new Date(), tz = 'UTC') {
 export function getCivilTimes(
   _lat: number,
   _lon: number,
-  date = new Date
+  date = new Date(),
+  tz = 'America/Chicago'
+): CivilTimes {
+  const base = toTZ(date, tz);
+  const mk = (h: number, m = 0) => {
+    const d = new Date(base);
+    d.setHours(h, m, 0, 0);
+    return d;
+  };
+  // Placeholder values; swap with precise solar calculations later.
+  return {
+    dawn: mk(6, 30),
+    sunrise: mk(7, 0),
+    sunset: mk(19, 0),
+    dusk: mk(19, 30),
+  };
+}
