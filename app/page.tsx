@@ -1,11 +1,11 @@
 // app/page.tsx
 'use client';
+
 import React from 'react';
 
 export default function HomePage() {
-  const [zip, setZip] = React.useState<string>('80487');
-  // ...rest of the file unchanged
-}
+  const [zip, setZip] = React.useState('80487');
+
   return (
     <main className="min-h-screen bg-white">
       <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-10">
