@@ -1,7 +1,7 @@
 // app/page.tsx
 import HomeChart from './components/HomeChart';
 import { fetchWeather } from '@/lib/weatherkit';
-import { getCivilTimes, fmtLocalHM, fmtLocalDateLine, hourToken, localParts } from '@/lib/sun';
+import { getCivilTimes, fmtLocalHM, fmtLocalDateLine, hourToken, localParts } from '@/lib/sun.ts';
 import * as zipcodes from 'zipcodes';
 
 export const dynamic = 'force-dynamic';
