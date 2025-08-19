@@ -1,110 +1,110 @@
 // app/api/cron/send-daily/route.ts
 import { NextResponse } from 'next/server';
 import { headers, cookies } from 'next/headers';
+import { prisma } from '@/server/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-// -------------------- helpers --------------------
-function trimSafe(s: string | null | undefined): string {
-  return (s ?? '').trim();
-}
-function bearerToken(h: string | null): string {
-  const v = (h ?? '').trim();
+/** ---------- Auth helpers (mirrors /api/diag-auth) ---------- */
+function trim(v: string | null | undefined) { return (v ?? '').trim(); }
+function bearerToken(h: string | null) {
+  const v = trim(h);
   if (!v) return '';
-  if (/^Bearer\s+/i.test(v)) return v.replace(/^Bearer\s+/i, '').trim();
-  return '';
+  return /^Bearer\s+/i.test(v) ? v.replace(/^Bearer\s+/i, '').trim() : '';
 }
 
-type AuthDiag = {
-  envPresent: { ADMIN_TOKEN: boolean; CRON_SECRET: boolean };
-  presented: {
-    header_admin: boolean;
-    query_admin: boolean;
-    cookie_admin: boolean;
-    bearer: boolean;
-    header_cron: boolean;
-    query_cron: boolean;
-  };
-  matched: { adminMatched: boolean; cronMatched: boolean };
-};
-
-// returns mode or null + a safe diagnostics object
-function checkAuth(req: Request): { mode: 'admin' | 'cron' | null; diag: AuthDiag } {
+function isAuthorized(req: Request): {
+  ok: true; mode: 'admin' | 'cron';
+  presented: Record<string, boolean>;
+} | { ok: false } {
   const url = new URL(req.url);
   const hdr = headers();
   const cks = cookies();
 
-  // env vars
-  const ADMIN_TOKEN = trimSafe(process.env.ADMIN_TOKEN);
-  const CRON_SECRET = trimSafe(process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET);
+  const ADMIN_TOKEN = trim(process.env.ADMIN_TOKEN);
+  // Accept either CRON_SECRET or VERCEL_CRON_SECRET
+  const CRON_SECRET = trim(process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET);
 
-  // presented
-  const headerAdmin = trimSafe(hdr.get('x-admin-token'));
-  const queryAdmin = trimSafe(url.searchParams.get('token'));
-  const cookieAdmin = trimSafe(cks.get('admin_token')?.value);
-  const authHeader = trimSafe(hdr.get('authorization'));
-  const bearer = bearerToken(authHeader);
+  const headerAdmin = trim(hdr.get('x-admin-token'));
+  const queryAdmin  = trim(url.searchParams.get('token'));
+  const cookieAdmin = trim(cks.get('admin_token')?.value);
+  const authHeader  = trim(hdr.get('authorization'));
+  const bearer      = bearerToken(authHeader);
 
-  const headerCron = trimSafe(hdr.get('x-cron-secret'));
-  const queryCron = trimSafe(url.searchParams.get('secret') || url.searchParams.get('cron_secret'));
+  const headerCron  = trim(hdr.get('x-cron-secret'));
+  const queryCron   = trim(url.searchParams.get('secret') || url.searchParams.get('cron_secret'));
 
-  // matching
   const adminPresentedValues = [headerAdmin, queryAdmin, cookieAdmin, bearer].filter(Boolean);
-  const cronPresentedValues = [headerCron, queryCron, bearer].filter(Boolean);
+  const cronPresentedValues  = [headerCron, queryCron, bearer].filter(Boolean);
 
-  const adminMatched =
-    !!ADMIN_TOKEN && adminPresentedValues.some(v => v === ADMIN_TOKEN);
-  const cronMatched =
-    !!CRON_SECRET && cronPresentedValues.some(v => v === CRON_SECRET);
+  const adminMatched = !!ADMIN_TOKEN && adminPresentedValues.some(v => v === ADMIN_TOKEN);
+  const cronMatched  = !!CRON_SECRET && cronPresentedValues.some(v => v === CRON_SECRET);
 
-  const diag: AuthDiag = {
-    envPresent: { ADMIN_TOKEN: !!ADMIN_TOKEN, CRON_SECRET: !!CRON_SECRET },
-    presented: {
-      header_admin: !!headerAdmin,
-      query_admin: !!queryAdmin,
-      cookie_admin: !!cookieAdmin,
-      bearer: !!bearer,
-      header_cron: !!headerCron,
-      query_cron: !!queryCron,
-    },
-    matched: { adminMatched, cronMatched },
-  };
-
-  let mode: 'admin' | 'cron' | null = null;
-  if (adminMatched) mode = 'admin';
-  else if (cronMatched) mode = 'cron';
-
-  return { mode, diag };
+  if (adminMatched) {
+    return { ok: true, mode: 'admin', presented: {
+      header_admin: !!headerAdmin, query_admin: !!queryAdmin, cookie_admin: !!cookieAdmin,
+      bearer: !!bearer, header_cron: !!headerCron, query_cron: !!queryCron,
+    }};
+  }
+  if (cronMatched) {
+    return { ok: true, mode: 'cron', presented: {
+      header_admin: !!headerAdmin, query_admin: !!queryAdmin, cookie_admin: !!cookieAdmin,
+      bearer: !!bearer, header_cron: !!headerCron, query_cron: !!queryCron,
+    }};
+  }
+  return { ok: false };
 }
 
-// -------------------- handler --------------------
+/** ---------- Minimal handler to confirm auth path ---------- */
 export async function GET(req: Request) {
-  // Always support trace BEFORE enforcing auth
-  const wantsTrace = new URL(req.url).searchParams.get('trace') === '1';
-  const { mode, diag } = checkAuth(req);
+  const auth = isAuthorized(req);
+  if (!auth.ok) {
+    return NextResponse.json({ ok: false, error: 'unauthorized (cron/admin)' }, { status: 401 });
+  }
 
-  if (wantsTrace) {
-    // Safe diagnostics — no secrets returned
-    return NextResponse.json({
-      ok: !!mode,
-      mode,
-      ...diag,
-      note: 'Add ?token=ADMIN_TOKEN or ?secret=CRON_SECRET (or headers/cookie).',
+  try {
+    const url = new URL(req.url);
+    const dry = url.searchParams.get('dry') === '1' || !url.searchParams.has('send');
+    const onlyPhone = url.searchParams.get('phone') || undefined;
+
+    // Keep the DB selection super-safe: select columns we know exist everywhere
+    const where: any = { active: true };
+    if (onlyPhone) where.phoneE164 = onlyPhone;
+
+    const subs = await prisma.subscriber.findMany({
+      where,
+      select: { phoneE164: true, active: true, zip: true, durationMin: true, createdAt: true, lastSentAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
     });
-  }
 
-  if (!mode) {
-    return NextResponse.json({ ok: false, error: 'unauthorized (cron)' }, { status: 401 });
-  }
+    // We’re not sending anything in this “auth fix” pass — just confirming access
+    const details = subs.map(s => ({
+      phone: s.phoneE164,
+      zip: s.zip,
+      durationMin: s.durationMin,
+      createdAt: s.createdAt,
+      lastSentAt: s.lastSentAt,
+    }));
 
-  // Minimal success body so you can confirm auth is working
-  const dry = new URL(req.url).searchParams.get('dry') === '1';
-  return NextResponse.json({
-    ok: true,
-    mode,
-    dry,
-    now: new Date().toISOString(),
-    message: 'Auth OK. Once verified, we can re-enable the full job logic.',
-  });
+    return NextResponse.json({
+      ok: true,
+      mode: auth.mode,
+      dry,
+      matches: subs.length,
+      sent: 0,
+      details,
+      hints: {
+        use_query_secret: '/api/cron/send-daily?dry=1&secret=YOUR_CRON_SECRET',
+        use_header_secret: 'x-cron-secret: YOUR_CRON_SECRET',
+        use_admin_token: '/api/cron/send-daily?dry=1&token=YOUR_ADMIN_TOKEN',
+      },
+      presented: auth.presented,
+      now: new Date().toISOString(),
+    });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || 'server error' }, { status: 500 });
+  }
 }
