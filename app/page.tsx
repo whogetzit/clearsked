@@ -1,10 +1,10 @@
 // app/page.tsx
 'use client';
 
-import * as React from 'react';
+import React from 'react';
 
-export default function Page() {
-  const [zip, setZip] = React.useState('80487');
+export default function HomePage(): JSX.Element {
+  const [zip, setZip] = React.useState<string>('80487');
 
   return (
     <main className="min-h-screen bg-white">
@@ -43,7 +43,6 @@ export default function Page() {
             <button
               className="mt-4 inline-flex items-center justify-center rounded-lg bg-black px-4 py-2 text-white hover:bg-gray-900"
               type="button"
-              onClick={() => {/* continue to next step (wire up later) */}}
             >
               Continue
             </button>
@@ -57,7 +56,7 @@ export default function Page() {
             </p>
 
             <div className="mt-3 rounded-xl border border-gray-200 bg-white p-4">
-              {/* Simple inline SVG chart preview (static sample) */}
+              {/* Static inline SVG preview */}
               <svg viewBox="0 0 800 250" className="w-full h-[220px]">
                 {/* axes */}
                 <line x1="40" y1="20" x2="40" y2="210" stroke="#000" opacity="0.15" />
@@ -65,3 +64,37 @@ export default function Page() {
 
                 {/* daylight band */}
                 <rect x="120" y="20" width="560" height="190" fill="#10b981" opacity="0.06" />
+
+                {/* best 60 min window */}
+                <rect x="320" y="20" width="60" height="190" fill="#10b981" opacity="0.15" />
+
+                {/* civil dawn/dusk dashed lines */}
+                <line x1="120" y1="20" x2="120" y2="210" stroke="#111" strokeDasharray="4 4" opacity="0.5" />
+                <line x1="680" y1="20" x2="680" y2="210" stroke="#111" strokeDasharray="4 4" opacity="0.5" />
+
+                {/* temp line */}
+                <path
+                  d="M40,30 L300,30 L360,40 L420,70 L480,115 L540,135 L600,140 L660,142 L720,140 L780,138"
+                  fill="none"
+                  stroke="#111"
+                  strokeWidth="2.5"
+                />
+
+                {/* labels */}
+                <text x="315" y="40" fontSize="12" fill="#111">Best 60min: 6:52 AM–7:52 AM (score 100)</text>
+                <text x="100" y="225" fontSize="12" fill="#6b7280">0:00</text>
+                <text x="390" y="225" fontSize="12" fill="#6b7280">12:00</text>
+                <text x="750" y="225" fontSize="12" fill="#6b7280">24:00</text>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <footer className="mt-14 text-sm text-gray-500">
+          © {new Date().getFullYear()} ClearSked &nbsp;&nbsp;
+          <a className="underline" href="#">Terms</a> &nbsp; <a className="underline" href="#">Privacy</a>
+        </footer>
+      </div>
+    </main>
+  );
+}
