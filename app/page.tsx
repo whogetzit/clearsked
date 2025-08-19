@@ -3,6 +3,7 @@ import HomeChart from './components/HomeChart';
 import { fetchWeather } from '@/lib/weatherkit';
 import { getCivilTimes, fmtLocalHM, fmtLocalDateLine, hourToken, localParts } from '@/lib/sun';
 import * as zipcodes from 'zipcodes';
+import ComfortChart from '@/components/ComfortChart';
 
 export const dynamic = 'force-dynamic';
 
