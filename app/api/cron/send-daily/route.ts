@@ -79,6 +79,30 @@ function hourToken(d: Date, tz: string) {
   return `${h12}${p.hh < 12 ? 'a' : 'p'}`;
 }
 
+/* ------------------------- PREFS (SAFE JSON PARSING) ---------------------- */
+type PrefsBag = Partial<{
+  timeZone: string;
+  deliveryHourLocal: number;
+  tempMin: number; tempMax: number;
+  windMax: number; uvMax: number; aqiMax: number;
+  humidityMax: number; precipMax: number; cloudMax: number;
+}>;
+function readPrefs(json: unknown): PrefsBag {
+  try {
+    if (typeof json === 'string') {
+      const parsed = JSON.parse(json);
+      if (parsed && typeof parsed === 'object') return parsed as PrefsBag;
+      return {};
+    }
+    if (json && typeof json === 'object') {
+      return json as PrefsBag;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
+}
+
 /* ----------------------------- WEATHER PARSERS ---------------------------- */
 type HourSample = {
   time: Date;
@@ -322,7 +346,7 @@ function buildChartUrl(args: {
 export async function GET(req: Request) {
   const url = new URL(req.url);
 
-  // Optional trace to debug what’s being presented (no secrets leaked)
+  // Optional trace to confirm what’s presented (no secrets leaked)
   if (url.searchParams.get('trace') === '1') {
     const hdrs = headers();
     const cks  = cookies();
@@ -353,6 +377,8 @@ export async function GET(req: Request) {
   const auth = isAuthorized(req);
   if (!auth.ok) {
     return NextResponse.json({ ok: false, error: 'unauthorized (cron/admin)' }, { status: 401 });
+    // Tip: for cron requests, use ?secret=YOUR_CRON_SECRET (or header x-cron-secret)
+    // For admin, use ?token=YOUR_ADMIN_TOKEN (or header x-admin-token / cookie admin_token)
   }
 
   try {
@@ -369,22 +395,20 @@ export async function GET(req: Request) {
       (process.env.TWILIO_FROM_NUMBER || process.env.TWILIO_MESSAGING_SERVICE_SID)
     );
 
-    // IMPORTANT: select only columns that definitely exist in your DB schema
-    const subscriberSelect = {
-      phoneE164: true,
-      active: true,
-      zip: true,
-      latitude: true,
-      longitude: true,
-      durationMin: true,
-      prefs: true,        // legacy JSON bag (may include timeZone, deliveryHourLocal, thresholds)
-      createdAt: true,
-      lastSentAt: true,
-    } satisfies Parameters<typeof prisma.subscriber.findMany>[0]['select'];
-
+    // Select only known columns in DB
     const subs = await prisma.subscriber.findMany({
       where: { active: true, ...(onlyPhone ? { phoneE164: onlyPhone } : {}) },
-      select: subscriberSelect,
+      select: {
+        phoneE164: true,
+        active: true,
+        zip: true,
+        latitude: true,
+        longitude: true,
+        durationMin: true,
+        prefs: true,        // JSON bag
+        createdAt: true,
+        lastSentAt: true,
+      },
       ...(onlyPhone ? { take: 1 } : {}),
     });
 
@@ -392,9 +416,9 @@ export async function GET(req: Request) {
 
     for (const s of subs) {
       try {
-        const p = s.prefs ?? {};
+        const p = readPrefs(s.prefs);
         const tz: string = p.timeZone ?? 'America/Chicago';
-        const deliveryHourLocal: number | undefined = (p.deliveryHourLocal ?? undefined);
+        const deliveryHourLocal: number | undefined = p.deliveryHourLocal ?? undefined;
 
         const partsNow = localParts(nowUTC, tz);
         if (!onlyPhone && typeof deliveryHourLocal === 'number' && deliveryHourLocal !== partsNow.hh) {
@@ -454,16 +478,10 @@ export async function GET(req: Request) {
           continue;
         }
 
-        // Preferences (from prefs JSON bag)
         const prefs: Prefs = {
-          tempMin: p.tempMin ?? undefined,
-          tempMax: p.tempMax ?? undefined,
-          windMax: p.windMax ?? undefined,
-          uvMax: p.uvMax ?? undefined,
-          aqiMax: p.aqiMax ?? undefined,
-          humidityMax: p.humidityMax ?? undefined,
-          precipMax: p.precipMax ?? undefined,
-          cloudMax: p.cloudMax ?? undefined,
+          tempMin: p.tempMin, tempMax: p.tempMax,
+          windMax: p.windMax, uvMax: p.uvMax, aqiMax: p.aqiMax,
+          humidityMax: p.humidityMax, precipMax: p.precipMax, cloudMax: p.cloudMax,
         };
 
         const scored: (HourSample & { score: number })[] =
@@ -479,7 +497,6 @@ export async function GET(req: Request) {
           continue;
         }
 
-        // Compose SMS
         const rep = best.repr;
         const tempStr = rep.temperature !== undefined ? `${Math.round(rep.temperature)}°F` : '';
         const windStr = rep.windSpeed !== undefined ? `${Math.round(rep.windSpeed)} mph wind` : '';
@@ -495,8 +512,8 @@ export async function GET(req: Request) {
           [tempStr, windStr, uvStr, humStr, precipStr].filter(Boolean).join(' · ') +
           `\n— ClearSked (reply STOP to cancel)`;
 
-        // Build chart URL (indices relative to daylight array)
-        const dawnIdx = 0; // daylight begins at dawn
+        // Chart URL (indices relative to daylight array)
+        const dawnIdx = 0;
         const duskIdx = Math.max(0, daylight.length - 1);
         const title = `Best ${durationMin}m ${best.startHM}–${best.endHM} (Score ${best.avgScore})`;
         const chartUrl = buildChartUrl({
