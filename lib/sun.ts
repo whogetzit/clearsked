@@ -18,13 +18,13 @@ export type LocalParts = {
 // ---- Utils ----
 const pad = (n: number) => String(n).padStart(2, '0');
 
+/** Return a Date that reflects the same wall-clock time in the given tz */
 function toTZ(date: Date | number, tz: string) {
   const d = new Date(date);
-  // Returns a Date object representing the same wall-clock time in tz
   return new Date(new Date(d.toLocaleString('en-US', { timeZone: tz })));
 }
 
-// ---- Exports your code expects ----
+// ---- Exports your app expects ----
 export function localParts(d: Date = new Date(), tz = 'UTC'): LocalParts {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
@@ -46,7 +46,7 @@ export function localParts(d: Date = new Date(), tz = 'UTC'): LocalParts {
 
   const hh = pad(h);
   const mm = pad(m);
-  const key = `${Y}${pad(M)}${pad(D)}`; // <- NEW: day key "YYYYMMDD"
+  const key = `${Y}${pad(M)}${pad(D)}`; // "YYYYMMDD"
 
   return { Y, M, D, h, m, hh, mm, key };
 }
@@ -68,4 +68,32 @@ export function fmtLocalDateLine(d: Date, tz: string) {
   }).format(d);
 }
 
-export function hourToken(
+export function hourToken(d: Date = new Date(), tz = 'UTC') {
+  const { Y, M, D, h } = localParts(d, tz);
+  return `${Y}${pad(M)}${pad(D)}${pad(h)}`; // e.g., "2025081911"
+}
+
+/**
+ * getCivilTimes
+ * Placeholder (simple fixed times) to unblock builds.
+ * Replace later with accurate solar calculations if needed.
+ */
+export function getCivilTimes(
+  _lat: number,
+  _lon: number,
+  date: Date = new Date(),
+  tz: string = 'America/Chicago'
+): CivilTimes {
+  const base = toTZ(date, tz);
+  const mk = (h: number, m = 0) => {
+    const d = new Date(base);
+    d.setHours(h, m, 0, 0);
+    return d;
+  };
+  return {
+    dawn: mk(6, 30),
+    sunrise: mk(7, 0),
+    sunset: mk(19, 0),
+    dusk: mk(19, 30),
+  };
+}
