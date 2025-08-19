@@ -7,30 +7,32 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-/* ---------------------- utils ---------------------- */
-function trim(v: string | null | undefined) { return (v ?? '').trim(); }
-function bearerToken(h: string | null) {
-  const v = trim(h);
-  if (!v) return '';
-  return /^Bearer\s+/i.test(v) ? v.replace(/^Bearer\s+/i, '').trim() : '';
+// Bump this any time you redeploy, so you can verify which code is live:
+const VERSION = 'send-daily.v3.0.0-2025-08-19T01:10Z';
+
+function trim(s: string | null | undefined) { return (s ?? '').trim(); }
+function bearerToken(v: string | null) {
+  const s = trim(v);
+  if (!s) return '';
+  return /^Bearer\s+/i.test(s) ? s.replace(/^Bearer\s+/i, '').trim() : '';
 }
-function maskId(s: string) {
+function mask(s: string) {
   if (!s) return '';
   if (s.length <= 8) return '*'.repeat(Math.max(0, s.length - 2)) + s.slice(-2);
   return s.slice(0, 3) + '…' + s.slice(-3);
 }
 
-/* ---------------------- auth (mirrors diag-auth) ---------------------- */
+/** Auth identical to the diag route (admin or cron can pass) */
 function authorize(req: Request) {
   const url = new URL(req.url);
   const hdr = headers();
   const cks = cookies();
 
-  // Env secrets (Production scope!)
+  // Env secrets from Production scope
   const ADMIN_TOKEN = trim(process.env.ADMIN_TOKEN);
   const CRON_SECRET = trim(process.env.CRON_SECRET || process.env.VERCEL_CRON_SECRET);
 
-  // Presented tokens
+  // Presented credentials
   const headerAdmin = trim(hdr.get('x-admin-token'));
   const queryAdmin  = trim(url.searchParams.get('token'));
   const cookieAdmin = trim(cks.get('admin_token')?.value);
@@ -40,36 +42,34 @@ function authorize(req: Request) {
   const headerCron  = trim(hdr.get('x-cron-secret'));
   const queryCron   = trim(url.searchParams.get('secret') || url.searchParams.get('cron_secret'));
 
-  const adminPresentedValues = [headerAdmin, queryAdmin, cookieAdmin, bearer].filter(Boolean);
-  const cronPresentedValues  = [headerCron, queryCron, bearer].filter(Boolean);
+  const adminPresented = [headerAdmin, queryAdmin, cookieAdmin, bearer].filter(Boolean);
+  const cronPresented  = [headerCron, queryCron, bearer].filter(Boolean);
 
-  const adminMatched = !!ADMIN_TOKEN && adminPresentedValues.some(v => v === ADMIN_TOKEN);
-  const cronMatched  = !!CRON_SECRET && cronPresentedValues.some(v => v === CRON_SECRET);
-
-  const presented = {
-    header_admin: !!headerAdmin,
-    query_admin:  !!queryAdmin,
-    cookie_admin: !!cookieAdmin,
-    bearer:       !!bearer,
-    header_cron:  !!headerCron,
-    query_cron:   !!queryCron,
-  };
+  const adminMatched = !!ADMIN_TOKEN && adminPresented.some(v => v === ADMIN_TOKEN);
+  const cronMatched  = !!CRON_SECRET && cronPresented.some(v => v === CRON_SECRET);
 
   return {
     ok: adminMatched || cronMatched,
     mode: adminMatched ? 'admin' as const : (cronMatched ? 'cron' as const : null),
-    presented,
+    presented: {
+      header_admin: !!headerAdmin,
+      query_admin:  !!queryAdmin,
+      cookie_admin: !!cookieAdmin,
+      bearer:       !!bearer,
+      header_cron:  !!headerCron,
+      query_cron:   !!queryCron,
+    },
     diag: {
       envPresent: { ADMIN_TOKEN: !!ADMIN_TOKEN, CRON_SECRET: !!CRON_SECRET },
       equals: {
-        // safe booleans to help you debug
-        query_admin_equals_env: !!ADMIN_TOKEN && !!queryAdmin && queryAdmin === ADMIN_TOKEN,
+        query_admin_equals_env:  !!ADMIN_TOKEN && !!queryAdmin  && queryAdmin  === ADMIN_TOKEN,
         cookie_admin_equals_env: !!ADMIN_TOKEN && !!cookieAdmin && cookieAdmin === ADMIN_TOKEN,
         header_admin_equals_env: !!ADMIN_TOKEN && !!headerAdmin && headerAdmin === ADMIN_TOKEN,
-        bearer_equals_admin_env: !!ADMIN_TOKEN && !!bearer && bearer === ADMIN_TOKEN,
-        query_cron_equals_env: !!CRON_SECRET && !!queryCron && queryCron === CRON_SECRET,
-        header_cron_equals_env: !!CRON_SECRET && !!headerCron && headerCron === CRON_SECRET,
-        bearer_equals_cron_env: !!CRON_SECRET && !!bearer && bearer === CRON_SECRET,
+        bearer_equals_admin_env: !!ADMIN_TOKEN && !!bearer     && bearer     === ADMIN_TOKEN,
+
+        query_cron_equals_env:   !!CRON_SECRET && !!queryCron  && queryCron  === CRON_SECRET,
+        header_cron_equals_env:  !!CRON_SECRET && !!headerCron && headerCron === CRON_SECRET,
+        bearer_equals_cron_env:  !!CRON_SECRET && !!bearer     && bearer     === CRON_SECRET,
       },
       lengths: {
         ADMIN_TOKEN_len: ADMIN_TOKEN.length || 0,
@@ -81,81 +81,65 @@ function authorize(req: Request) {
         query_cron_len: queryCron.length || 0,
         header_cron_len: headerCron.length || 0,
       },
-      // masked heads/tails help catch whitespace issues
       samples: {
-        ADMIN_TOKEN: maskId(ADMIN_TOKEN),
-        CRON_SECRET: maskId(CRON_SECRET),
-        query_admin: maskId(queryAdmin),
-        cookie_admin: maskId(cookieAdmin),
-        header_admin: maskId(headerAdmin),
-        bearer: maskId(bearer),
-        query_cron: maskId(queryCron),
-        header_cron: maskId(headerCron),
+        ADMIN_TOKEN: mask(ADMIN_TOKEN),
+        CRON_SECRET: mask(CRON_SECRET),
+        query_admin: mask(queryAdmin),
+        cookie_admin: mask(cookieAdmin),
+        header_admin: mask(headerAdmin),
+        bearer: mask(bearer),
+        query_cron: mask(queryCron),
+        header_cron: mask(headerCron),
       },
     },
   };
 }
 
-/* ---------------------- handler ---------------------- */
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const debug = url.searchParams.has('debug'); // ?debug=1 to see diagnostics
-
+  const debug = url.searchParams.has('debug'); // always allowed
   const auth = authorize(req);
 
-  // Always return diagnostics when debug=1 (even if unauthorized)
+  // 1) Debug surface (no auth required) — lets you prove which tokens are being seen and matched.
   if (debug) {
-    return NextResponse.json(
-      {
-        ok: true,
-        note: 'Debugging auth view for send-daily',
-        authorized: auth.ok,
-        mode: auth.mode,
-        presented: auth.presented,
-        diag: auth.diag,
-        now: new Date().toISOString(),
-      },
-      { headers: { 'Cache-Control': 'no-store' } },
-    );
+    return NextResponse.json({
+      ok: true,
+      version: VERSION,
+      authorized: auth.ok,
+      mode: auth.mode,
+      presented: auth.presented,
+      diag: auth.diag,
+      now: new Date().toISOString(),
+      try_examples: {
+        cron_query: '/api/cron/send-daily?dry=1&secret=YOUR_CRON_SECRET',
+        cron_header: 'x-cron-secret: YOUR_CRON_SECRET',
+        admin_query: '/api/cron/send-daily?dry=1&token=YOUR_ADMIN_TOKEN'
+      }
+    }, { headers: { 'Cache-Control': 'no-store' } });
   }
 
+  // 2) Enforce auth for all non-debug requests
   if (!auth.ok) {
     return NextResponse.json(
-      { ok: false, error: 'unauthorized (cron/admin)' },
-      { status: 401, headers: { 'Cache-Control': 'no-store' } },
+      { ok: false, error: 'unauthorized (cron/admin)', version: VERSION },
+      { status: 401, headers: { 'Cache-Control': 'no-store' } }
     );
   }
 
-  // Minimal DB ping so you can see it works end to end
+  // 3) Minimal success payload for now (we’ll re-enable SMS after auth is green)
   try {
     const count = await prisma.subscriber.count({ where: { active: true } });
-    const sample = await prisma.subscriber.findMany({
-      where: { active: true },
-      select: { phoneE164: true, zip: true, durationMin: true, createdAt: true, lastSentAt: true },
-      orderBy: { createdAt: 'desc' },
-      take: 3,
-    });
-
-    return NextResponse.json(
-      {
-        ok: true,
-        mode: auth.mode,
-        matchedActive: count,
-        sample,
-        hints: {
-          cron_query: '/api/cron/send-daily?dry=1&secret=YOUR_CRON_SECRET',
-          cron_header: 'x-cron-secret: YOUR_CRON_SECRET',
-          admin_query: '/api/cron/send-daily?dry=1&token=YOUR_ADMIN_TOKEN',
-          debug_view: '/api/cron/send-daily?debug=1&secret=YOUR_CRON_SECRET',
-        },
-        now: new Date().toISOString(),
-      },
-      { headers: { 'Cache-Control': 'no-store' } },
-    );
+    return NextResponse.json({
+      ok: true,
+      version: VERSION,
+      mode: auth.mode,
+      matchedActive: count,
+      hint: 'Auth succeeded. Add &dry=1 to keep it non-sending; remove it when ready.'
+    }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e: any) {
     return NextResponse.json(
-      { ok: false, error: e?.message || 'server error' },
-      { status: 500, headers: { 'Cache-Control': 'no-store' } },
+      { ok: false, version: VERSION, error: e?.message || 'server error' },
+      { status: 500, headers: { 'Cache-Control': 'no-store' } }
     );
   }
 }
