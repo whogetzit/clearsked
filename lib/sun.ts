@@ -11,6 +11,8 @@ export type CivilTimes = {
 export type LocalParts = {
   Y: number; M: number; D: number; h: number; m: number;
   hh: string; mm: string;
+  /** Day key like "20250819" for grouping/filtering */
+  key: string;
 };
 
 // ---- Utils ----
@@ -42,7 +44,11 @@ export function localParts(d: Date = new Date(), tz = 'UTC'): LocalParts {
   const h = getNum('hour');
   const m = getNum('minute');
 
-  return { Y, M, D, h, m, hh: pad(h), mm: pad(m) };
+  const hh = pad(h);
+  const mm = pad(m);
+  const key = `${Y}${pad(M)}${pad(D)}`; // <- NEW: day key "YYYYMMDD"
+
+  return { Y, M, D, h, m, hh, mm, key };
 }
 
 export function fmtLocalHM(d: Date, tz: string) {
@@ -62,33 +68,4 @@ export function fmtLocalDateLine(d: Date, tz: string) {
   }).format(d);
 }
 
-export function hourToken(d = new Date(), tz = 'UTC') {
-  const { Y, M, D, h } = localParts(d, tz);
-  return `${Y}${pad(M)}${pad(D)}${pad(h)}`; // e.g., "2025081911"
-}
-
-/**
- * getCivilTimes
- * Placeholder (simple fixed times) to unblock builds.
- * Replace later with accurate solar calculations if needed.
- */
-export function getCivilTimes(
-  _lat: number,
-  _lon: number,
-  date = new Date(),
-  tz = 'America/Chicago'
-): CivilTimes {
-  const base = toTZ(date, tz);
-  const mk = (h: number, m = 0) => {
-    const d = new Date(base);
-    d.setHours(h, m, 0, 0);
-    return d;
-  };
-  // Placeholder values; swap with precise solar calculations later.
-  return {
-    dawn: mk(6, 30),
-    sunrise: mk(7, 0),
-    sunset: mk(19, 0),
-    dusk: mk(19, 30),
-  };
-}
+export function hourToken(
