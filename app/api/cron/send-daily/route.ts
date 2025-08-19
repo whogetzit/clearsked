@@ -13,21 +13,19 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// If you already read subscribers from DB or another module,
-// remove this stub and plug your source in.
 type Subscriber = {
   phoneE164: string;
-  tz?: string;                              // e.g. 'America/Chicago'
-  deliveryHourLocal?: number | string;      // hour 0–23; may be "08" -> 8
+  tz?: string;                         // e.g., 'America/Chicago'
+  deliveryHourLocal?: number | string; // 0–23 or "08"
   lat: number;
   lon: number;
-  onlyPhone?: boolean;                      // if true, skip the hour-gate
+  onlyPhone?: boolean;                 // if true, skip local hour gate
 };
 
-// TODO: replace with your real data source
+// TODO: Replace with your real data source (DB, etc.)
 const subscribers: Subscriber[] = [
   // Example:
-  // { phoneE164: '+15551234567', tz: 'America/Chicago', deliveryHourLocal: 8, lat: 41.8781, lon: -87.6298 }
+  // { phoneE164: '+15551234567', tz: 'America/Chicago', deliveryHourLocal: 8, lat: 41.8781, lon: -87.6298 },
 ];
 
 async function handle(): Promise<NextResponse> {
@@ -39,16 +37,16 @@ async function handle(): Promise<NextResponse> {
     const onlyPhone = Boolean(s.onlyPhone);
     const deliveryHourLocal = s.deliveryHourLocal;
 
-    // Current local time parts
+    // Current local time (parts)
     const nowParts = localParts(nowUTC, tz);
 
-    // --- FIX: compare number ↔ number ---
+    // Coerce to a number for comparison (string "08" -> 8)
     const deliveryHourNum =
       typeof deliveryHourLocal === 'string'
-        ? Number(deliveryHourLocal) // "08" -> 8
-        : deliveryHourLocal;        // already a number or undefined
+        ? Number(deliveryHourLocal)
+        : deliveryHourLocal;
 
-    // Gate the send to the configured local hour (unless onlyPhone is true)
+    // Gate: send only when local hour matches (unless onlyPhone)
     if (
       !onlyPhone &&
       Number.isFinite(deliveryHourNum) &&
@@ -58,16 +56,20 @@ async function handle(): Promise<NextResponse> {
         phone: s.phoneE164,
         tz,
         deliveryHourLocal,
-        localHourNow: nowParts.h,   // numeric hour 0–23
+        localHourNow: nowParts.h,        // numeric 0–23
         localHourNowPadded: nowParts.hh, // "08"
         skipped: 'local hour does not match deliveryHourLocal',
       });
       continue;
     }
 
-    // Fetch sunrise/sunset-ish civil times and weather (customize as needed)
+    // Civil times (placeholder implementation in lib/sun)
     const civil = getCivilTimes(s.lat, s.lon, nowUTC, tz);
-    const weather = await fetchWeather(s.lat, s.lon).catch((err: unknown) => {
+
+    // Weather — FIX: pass the 3rd expected argument
+    // If your fetchWeather signature is (lat, lon, when: Date) instead of tz,
+    // change the 3rd param to `nowUTC`.
+    const weather = await fetchWeather(s.lat, s.lon, tz).catch((err: unknown) => {
       results.push({
         phone: s.phoneE164,
         tz,
@@ -78,7 +80,7 @@ async function handle(): Promise<NextResponse> {
     });
     if (!weather) continue;
 
-    // Compose a simple message (customize to your needs)
+    // Compose message (customize as needed)
     const nowLine = `${fmtLocalDateLine(nowUTC, tz)} • ${fmtLocalHM(nowUTC, tz)}`;
     const sunLine = `Sunrise ${fmtLocalHM(civil.sunrise, tz)}, Sunset ${fmtLocalHM(civil.sunset, tz)}`;
     const token = hourToken(nowUTC, tz);
@@ -89,7 +91,6 @@ async function handle(): Promise<NextResponse> {
       `${sunLine}\n` +
       `Token: ${token}`;
 
-    // Send SMS (handle/record failures)
     try {
       await sendSms(s.phoneE164, msg);
       results.push({ phone: s.phoneE164, tz, sent: true });
