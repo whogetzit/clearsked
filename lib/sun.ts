@@ -1,16 +1,30 @@
 // lib/sun.ts
 
-// add near top-level (outside functions)
-const pad = (n: number) => String(n).padStart(2, '0');
+// ---- Types ----
+export type CivilTimes = {
+  dawn: Date;
+  sunrise: Date;
+  sunset: Date;
+  dusk: Date;
+};
 
-// Optionally export a type so TS knows hh/mm exist
 export type LocalParts = {
   Y: number; M: number; D: number; h: number; m: number;
   hh: string; mm: string;
 };
 
-export function localParts(d = new Date(), tz = 'UTC'): LocalParts {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
+// ---- Utils ----
+const pad = (n: number) => String(n).padStart(2, '0');
+
+function toTZ(date: Date | number, tz: string) {
+  const d = new Date(date);
+  // Returns a Date object representing the same wall-clock time in tz
+  return new Date(new Date(d.toLocaleString('en-US', { timeZone: tz })));
+}
+
+// ---- Exports your code expects ----
+export function localParts(d: Date = new Date(), tz = 'UTC'): LocalParts {
+  const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: tz,
     year: 'numeric',
     month: '2-digit',
@@ -20,19 +34,45 @@ export function localParts(d = new Date(), tz = 'UTC'): LocalParts {
     hour12: false,
   }).formatToParts(d);
 
-  const get = (t: string) => Number(fmt.find((p) => p.type === t)?.value ?? '0');
+  const getNum = (t: string) => Number(parts.find(p => p.type === t)?.value ?? '0');
 
-  const Y = get('year');
-  const M = get('month');
-  const D = get('day');
-  const h = get('hour');
-  const m = get('minute');
+  const Y = getNum('year');
+  const M = getNum('month');
+  const D = getNum('day');
+  const h = getNum('hour');
+  const m = getNum('minute');
 
   return { Y, M, D, h, m, hh: pad(h), mm: pad(m) };
 }
 
-// adjust hourToken to use the shared pad
+export function fmtLocalHM(d: Date, tz: string) {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(d);
+}
+
+export function fmtLocalDateLine(d: Date, tz: string) {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  }).format(d);
+}
+
 export function hourToken(d = new Date(), tz = 'UTC') {
   const { Y, M, D, h } = localParts(d, tz);
-  return `${Y}${pad(M)}${pad(D)}${pad(h)}`;
+  return `${Y}${pad(M)}${pad(D)}${pad(h)}`; // e.g., "2025081911"
 }
+
+/**
+ * getCivilTimes
+ * Placeholder (simple fixed times) to unblock builds.
+ * Replace later with accurate solar calculations if needed.
+ */
+export function getCivilTimes(
+  _lat: number,
+  _lon: number,
+  date = new Date
