@@ -4,7 +4,7 @@ import { headers, cookies } from 'next/headers';
 import { prisma } from '@/server/db';
 import { fetchWeather } from '@/lib/weatherkit';
 import { sendSms } from '@/lib/twilio';
-import { getCivilTimes, fmtLocalHM, fmtLocalDateLine, hourToken, localParts } from '@/lib/sun';
+import { getCivilTimes, fmtLocalHM, fmtLocalDateLine, hourToken, localParts } from '@/lib/sun.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
