@@ -15,11 +15,12 @@ export const dynamic = 'force-dynamic';
 
 type Subscriber = {
   phoneE164: string;
-  tz?: string;                         // e.g., 'America/Chicago'
-  deliveryHourLocal?: number | string; // 0–23 or "08"
+  tz?: string;
+  deliveryHourLocal?: number | string;
   lat: number;
   lon: number;
-  onlyPhone?: boolean;                 // if true, skip local hour gate
+  zip?: string;
+  onlyPhone?: boolean;
 };
 
 // TODO: Replace with your real data source (DB, etc.)
