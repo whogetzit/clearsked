@@ -54,13 +54,14 @@ async function handle(): Promise<NextResponse> {
       (deliveryHourNum as number) !== nowParts.h
     ) {
       results.push({
-        phone: s.phoneE164,
-        tz,
-        deliveryHourLocal,
-        localHourNow: nowParts.h,        // numeric 0–23
-        localHourNowPadded: nowParts.hh, // "08"
-        skipped: 'local hour does not match deliveryHourLocal',
-      });
+  phone: s.phoneE164,
+  zip: s.zip ?? null,
+  tz,
+  deliveryHourLocal,
+  localHourNow: nowParts.h,
+  localHourNowPadded: nowParts.hh,
+  skipped: 'local hour does not match deliveryHourLocal',
+});
       continue;
     }
 
