@@ -9,7 +9,7 @@ import { sendSms } from '@/lib/twilio';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const VERSION = 'send-daily.v3.1.0-guarded';
+const VERSION = 'send-daily.v3.2.0-styled';
 
 // ----------------- Small utils -----------------
 type Jsonish = unknown;
@@ -20,6 +20,7 @@ function asPrefs(v: Jsonish): Record<string, unknown> {
   return isPlainObject(v) ? (v as Record<string, unknown>) : {};
 }
 function pad2(n: number) { return n < 10 ? `0${n}` : `${n}`; }
+
 function localParts(d: Date, tz: string) {
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -39,6 +40,9 @@ function localParts(d: Date, tz: string) {
 function fmtLocalHM(d: Date, tz: string) {
   return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit' }).format(d);
 }
+function fmtLocalDate(d: Date, tz: string) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric' }).format(d);
+}
 function hourToken(d: Date, tz: string) {
   const p = localParts(d, tz);
   const h12 = (p.hh % 12) || 12;
@@ -52,6 +56,16 @@ function normalize01(x: number | undefined) {
   if (x === undefined) return undefined;
   if (x > 1) return Math.min(1, Math.max(0, x / 100));
   return Math.min(1, Math.max(0, x));
+}
+function compactJoin(items: (string | undefined)[], sep = ' · ') {
+  return items.filter(Boolean).join(sep);
+}
+function locationText(zip?: string | null, lat?: number | null, lon?: number | null) {
+  if (zip && zip.trim()) return zip.trim();
+  if (typeof lat === 'number' && typeof lon === 'number') {
+    return `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  }
+  return 'Location';
 }
 
 // ----------------- Auth helpers -----------------
@@ -269,7 +283,7 @@ function findBestWindow(samples: (HourSample & { score: number })[], durationMin
   };
 }
 
-// ----------------- Chart URL -----------------
+// ----------------- Chart URL (styled + date/location) -----------------
 function buildChartUrl(args: {
   tz: string;
   daylight: (HourSample & { score: number })[];
@@ -277,9 +291,11 @@ function buildChartUrl(args: {
   duskIdx: number;
   bestStartIdx: number;
   bestEndIdx: number;
-  title: string;
+  titleLine1: string;   // e.g., "ClearSked — 61550"
+  titleLine2: string;   // e.g., "Tue, Aug 19"
+  subtitle: string;     // e.g., "Best 60m 5:40–6:40 AM (Score 85) • Civil 5:40–8:22"
 }) {
-  const { tz, daylight, dawnIdx, duskIdx, bestStartIdx, bestEndIdx, title } = args;
+  const { tz, daylight, dawnIdx, duskIdx, bestStartIdx, bestEndIdx, titleLine1, titleLine2, subtitle } = args;
 
   const labels = daylight.map(h => hourToken(h.time, tz));
   const temps = daylight.map(h => (h.temperature !== undefined ? Math.round(h.temperature) : null));
@@ -290,6 +306,7 @@ function buildChartUrl(args: {
   const _b0 = Math.max(0, Math.min(labels.length - 1, bestStartIdx));
   const _b1 = Math.max(_b0, Math.min(labels.length - 1, bestEndIdx));
 
+  // Colors chosen to match site vibe (slate grid, blue line, emerald window)
   const cfg = {
     type: 'line',
     data: {
@@ -298,11 +315,12 @@ function buildChartUrl(args: {
         {
           label: 'Temp °F',
           data: temps,
-          borderColor: '#2563eb',
-          backgroundColor: 'rgba(37, 99, 235, 0.15)',
+          borderColor: '#2563eb',                  // blue-600
+          backgroundColor: 'rgba(37, 99, 235, 0.12)',
           tension: 0.3,
           borderWidth: 3,
           pointRadius: 0,
+          fill: false,
         },
       ],
     },
@@ -310,33 +328,55 @@ function buildChartUrl(args: {
       responsive: true,
       plugins: {
         legend: { display: false },
-        title: { display: true, text: title, font: { size: 16 } },
+        title: {
+          display: true,
+          text: [titleLine1, titleLine2],         // two-line title: location and date
+          color: '#0f172a',                        // slate-900
+          font: { size: 16, weight: '600' },
+          padding: { top: 8, bottom: 4 },
+        },
+        subtitle: {
+          display: true,
+          text: subtitle,
+          color: '#334155',                        // slate-700
+          font: { size: 12 },
+          padding: { bottom: 8 },
+        },
         annotation: {
           annotations: {
             dawnLine: {
               type: 'line',
               xMin: _dawn, xMax: _dawn,
-              borderColor: 'rgba(0,0,0,0.5)',
+              borderColor: 'rgba(2,6,23,0.5)',     // near-black w/ 50%
               borderWidth: 2, borderDash: [6, 6],
             },
             duskLine: {
               type: 'line',
               xMin: _dusk, xMax: _dusk,
-              borderColor: 'rgba(0,0,0,0.5)',
+              borderColor: 'rgba(2,6,23,0.5)',
               borderWidth: 2, borderDash: [6, 6],
             },
             bestBox: {
               type: 'box',
               xMin: _b0, xMax: _b1,
-              backgroundColor: 'rgba(16, 185, 129, 0.18)',
+              backgroundColor: 'rgba(16, 185, 129, 0.18)', // emerald-500 @ ~18%
               borderWidth: 0,
             },
           },
         },
       },
       scales: {
-        x: { grid: { display: false } },
-        y: { grid: { color: 'rgba(0,0,0,0.06)' }, ticks: { callback: (v: any) => `${v}°` } },
+        x: {
+          grid: { display: false },
+          ticks: { color: '#334155' },            // slate-700
+        },
+        y: {
+          grid: { color: 'rgba(148, 163, 184, 0.18)' }, // slate-400 @ 18%
+          ticks: {
+            color: '#334155',
+            callback: (v: any) => `${v}°`,
+          },
+        },
       },
     },
   };
@@ -417,12 +457,12 @@ export async function GET(req: Request) {
     let usedSafe = false;
     try {
       subs = await fetchSubsUnsafe();
-    } catch (e: any) {
+    } catch {
       usedSafe = true;
       subs = await fetchSubsSafe();
     }
 
-    // ---- If just asking “who would match” and not forcing hour match, allow all ----
+    // ---- Iterate subscribers ----
     const nowUTC = new Date();
     let sent = 0;
     let matches = 0;
@@ -439,6 +479,9 @@ export async function GET(req: Request) {
         const deliveryHourLocal: number | undefined =
           (s.deliveryHourLocal as number | undefined) ??
           (p.deliveryHourLocal as number | undefined);
+
+        const locText = locationText(s.zip, s.latitude, s.longitude);
+        const dateText = fmtLocalDate(nowUTC, tz);
 
         const partsNow = localParts(nowUTC, tz);
         const force = url.searchParams.get('force') === '1';
@@ -532,6 +575,7 @@ export async function GET(req: Request) {
           continue;
         }
 
+        // Compose SMS (now includes date + location in first line)
         const rep = best.repr;
         const tempStr = rep.temperature !== undefined ? `${Math.round(rep.temperature)}°F` : '';
         const windStr = rep.windSpeed !== undefined ? `${Math.round(rep.windSpeed)} mph wind` : '';
@@ -541,25 +585,44 @@ export async function GET(req: Request) {
         const pr      = rep.precipChance !== undefined ? (rep.precipChance <= 1 ? rep.precipChance * 100 : rep.precipChance) : undefined;
         const precipStr = pr !== undefined ? `${Math.round(pr)}% precip` : '';
 
-        const smsPreview =
-          `Civil dawn ${dawnLocal} · Civil dusk ${duskLocal}\n` +
-          `Best ${durationMin}min (daylight): ${best.startHM}–${best.endHM} (Score ${best.avgScore})\n` +
-          [tempStr, windStr, uvStr, humStr, precipStr].filter(Boolean).join(' · ') +
-          `\n— ClearSked (reply STOP to cancel)`;
+        const headerLine = `${dateText} — ${locText}`;
+        const dawnDusk   = `Civil dawn ${dawnLocal} · Civil dusk ${duskLocal}`;
+        const bestLine   = `Best ${durationMin}min (daylight): ${best.startHM}–${best.endHM} (Score ${best.avgScore})`;
+        const condLine   = compactJoin([tempStr, windStr, uvStr, humStr, precipStr]);
 
-        // Build chart URL (indices relative to daylight array)
+        const smsPreview =
+          `${headerLine}\n` +
+          `${dawnDusk}\n` +
+          `${bestLine}\n` +
+          `${condLine}\n` +
+          `— ClearSked (reply STOP to cancel)`;
+
+        // Build chart URL (indices relative to daylight array), include date/location in title
         const dawnIdx = 0;
         const duskIdx = Math.max(0, daylight.length - 1);
-        const title = `Best ${durationMin}m ${best.startHM}–${best.endHM} (Score ${best.avgScore})`;
+
+        const titleLine1 = `ClearSked — ${locText}`;
+        const titleLine2 = dateText;
+        const subtitle   = `Best ${durationMin}m ${best.startHM}–${best.endHM} (Score ${best.avgScore}) • Civil ${dawnLocal}–${duskLocal}`;
+
         const chartUrl = buildChartUrl({
-          tz, daylight: scored, dawnIdx, duskIdx,
-          bestStartIdx: best.startIdx, bestEndIdx: best.endIdx, title,
+          tz,
+          daylight: scored,
+          dawnIdx,
+          duskIdx,
+          bestStartIdx: best.startIdx,
+          bestEndIdx: best.endIdx,
+          titleLine1,
+          titleLine2,
+          subtitle,
         });
 
+        // Send or dry-run
         if (!dry) {
           if (!twilioReady) {
             details.push({
               phone: s.phoneE164, tz, dawnLocal, duskLocal,
+              date: dateText, location: locText,
               requestedDuration: durationMin, usedDuration: durationMin,
               startLocal: best.startHM, endLocal: best.endHM,
               bestScore: best.avgScore, smsPreview, chartUrl,
@@ -575,6 +638,7 @@ export async function GET(req: Request) {
               });
               details.push({
                 phone: s.phoneE164, tz, dawnLocal, duskLocal,
+                date: dateText, location: locText,
                 requestedDuration: durationMin, usedDuration: durationMin,
                 startLocal: best.startHM, endLocal: best.endHM,
                 bestScore: best.avgScore, smsPreview, chartUrl, sent: true,
@@ -582,6 +646,7 @@ export async function GET(req: Request) {
             } catch (e: any) {
               details.push({
                 phone: s.phoneE164, tz, dawnLocal, duskLocal,
+                date: dateText, location: locText,
                 requestedDuration: durationMin, usedDuration: durationMin,
                 startLocal: best.startHM, endLocal: best.endHM,
                 bestScore: best.avgScore, smsPreview, chartUrl,
@@ -592,6 +657,7 @@ export async function GET(req: Request) {
         } else {
           details.push({
             phone: s.phoneE164, tz, dawnLocal, duskLocal,
+            date: dateText, location: locText,
             requestedDuration: durationMin, usedDuration: durationMin,
             startLocal: best.startHM, endLocal: best.endHM,
             bestScore: best.avgScore, smsPreview, chartUrl,
