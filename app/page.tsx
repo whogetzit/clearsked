@@ -94,16 +94,14 @@ export default async function Page({ searchParams }: { searchParams?: SearchPara
         Zip: <strong>{zip}</strong> · TZ: <strong>{tz}</strong>
       </p>
 
-      <HomeChart
-        labels={labels}
-        temps={temps}
-        dawnIdx={dawnIdx}
-        duskIdx={duskIdx}
-        bestStartIdx={bestStartIdx}
-        bestEndIdx={bestEndIdx}
-        title={title}
-        subtitle={subtitle}
-      />
+      <ComfortChart
+  labels={labels}
+  temps={temps}
+  dawnIdx={dawnIdx}
+  duskIdx={duskIdx}
+  bestStartIdx={bestStartIdx}
+  bestEndIdx={bestEndIdx}
+/>
 
       <form action="/" method="get" style={{ marginTop: 20 }}>
         <label>
