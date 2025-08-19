@@ -1,268 +1,291 @@
 // app/admin/AdminClient.tsx
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React from 'react';
 
-type SubsRow = {
-  phone?: string;
-  phoneE164?: string;
-  active?: boolean;
-  zip?: string;
-  latitude?: number | null;
-  longitude?: number | null;
-  durationMin?: number | null;
-  timeZone?: string | null;
-  deliveryHourLocal?: number | null;
-  createdAt?: string | Date | null;
-  lastSentAt?: string | Date | null;
-  [k: string]: any;
-};
-
-// ---- Safe cookie helpers (no regex pitfalls) ----
-function getCookie(name: string): string | null {
+/** Read the admin token cookie (non-HttpOnly) set at login. */
+function readAdminCookie(): string | null {
   if (typeof document === 'undefined') return null;
-  const target = name + '=';
-  return document.cookie
-    .split(';')
-    .map((s) => s.trim())
-    .reduce<string | null>((acc, row) => {
-      if (acc) return acc;
-      if (row.startsWith(target)) return decodeURIComponent(row.slice(target.length));
-      return null;
-    }, null);
+  const parts = document.cookie.split(';');
+  for (const p of parts) {
+    const [k, ...rest] = p.trim().split('=');
+    if (k === 'admin_token') return decodeURIComponent(rest.join('='));
+  }
+  return null;
 }
 
-function setCookie(name: string, value: string, days = 365) {
-  if (typeof document === 'undefined') return;
-  const maxAge = days * 24 * 60 * 60;
-  const secure = typeof location !== 'undefined' && location.protocol === 'https:' ? '; Secure' : '';
-  document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax${secure}`;
+/** Robust fetcher: get text, try JSON, show raw on parse failure. */
+async function fetchSafeJSON(input: RequestInfo, init?: RequestInit) {
+  const res = await fetch(input, {
+    ...init,
+    cache: 'no-store',
+    headers: {
+      accept: 'application/json',
+      ...(init?.headers || {}),
+    },
+  });
+
+  const text = await res.text();
+  let parsed: any = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch (err: any) {
+    // Not JSON — return a shaped object with raw text for visibility
+    parsed = {
+      ok: false,
+      parseError: err?.message || 'JSON parse failed',
+      raw: text,
+      status: res.status,
+      statusText: res.statusText,
+    };
+  }
+
+  // If HTTP error, carry the payload up as an error, but include text/parsed
+  if (!res.ok) {
+    const msg =
+      (parsed && typeof parsed === 'object' && parsed.error) ||
+      `${res.status} ${res.statusText}`;
+    const e = new Error(msg) as any;
+    e.response = parsed ?? text;
+    throw e;
+  }
+
+  // Success
+  return parsed ?? { ok: true, raw: text };
 }
 
 export default function AdminClient() {
-  const [token, setToken] = useState('');
-  const [limit, setLimit] = useState(50);
-  const [mask, setMask] = useState(true);
-  const [phone, setPhone] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [log, setLog] = useState<any>(null);
-  const [rows, setRows] = useState<SubsRow[] | null>(null);
+  const [token, setToken] = React.useState<string>('');
+  const [phone, setPhone] = React.useState<string>('');
+  const [consoleOut, setConsoleOut] = React.useState<string>('Ready.');
+  const [busy, setBusy] = React.useState<boolean>(false);
 
-  useEffect(() => {
-    const t = getCookie('admin_token');
+  // On mount, grab admin cookie as default token
+  React.useEffect(() => {
+    const t = readAdminCookie();
     if (t) setToken(t);
   }, []);
 
-  const headers = useMemo(() => (token ? { 'x-admin-token': token } : {}), [token]);
-
-  function show(output: any) {
-    setLog(output);
-  }
-
-  function saveToken() {
-    if (!token) return;
-    setCookie('admin_token', token, 365);
-    alert('Saved admin token to cookie.');
-  }
-
-  // --------- Actions ----------
-  async function loadSubs() {
-    setBusy(true);
-    setRows(null);
+  function setPretty(obj: any) {
     try {
-      if (!token) throw new Error('No admin token set');
-      const qs = new URLSearchParams({
-        limit: String(Math.max(1, Math.min(500, limit || 50))),
-        mask: mask ? '1' : '0',
+      setConsoleOut(JSON.stringify(obj, null, 2));
+    } catch {
+      setConsoleOut(String(obj));
+    }
+  }
+
+  function buildURL(opts: { dry?: boolean; force?: boolean; phone?: string }) {
+    const q = new URLSearchParams();
+    if (opts.dry) q.set('dry', '1');
+    if (opts.force) q.set('force', '1');
+    if (opts.phone) q.set('phone', opts.phone);
+    // Send token in query to avoid cookie edge cases
+    if (token) q.set('token', token);
+    return `/api/cron/send-daily?${q.toString()}`;
+  }
+
+  async function runForce(dry: boolean) {
+    setBusy(true);
+    setPretty({ running: 'force send', dry, phone: phone || null });
+
+    const url = buildURL({ dry, force: true, phone: phone || undefined });
+    try {
+      const data = await fetchSafeJSON(url, {
+        method: 'GET',
+        headers: token ? { 'x-admin-token': token } : undefined, // also send via header
       });
-      const res = await fetch(`/api/admin/subscribers?${qs.toString()}`, { headers, cache: 'no-store' });
-      const json = await res.json();
-      show(json);
-      if (json.ok && Array.isArray(json.rows)) setRows(json.rows);
-    } catch (e: any) {
-      show({ ok: false, error: e?.message || String(e) });
+      setPretty({
+        success: true,
+        url,
+        usedHeader: !!token,
+        result: data,
+      });
+    } catch (err: any) {
+      setPretty({
+        success: false,
+        url,
+        usedHeader: !!token,
+        error: err?.message || 'request failed',
+        response: err?.response ?? null,
+      });
     } finally {
       setBusy(false);
     }
   }
 
-  function exportCsv() {
-    if (!token) {
-      alert('Set token first');
-      return;
-    }
-    const url = `/api/admin/export?token=${encodeURIComponent(token)}`;
-    window.open(url, '_blank');
-  }
-
-  async function forceSend(dry = true) {
+  async function runDryAll() {
     setBusy(true);
+    const url = buildURL({ dry: true, force: true });
     try {
-      if (!token) throw new Error('No admin token set');
-      const qs = new URLSearchParams();
-      qs.set('force', '1');
-      if (dry) qs.set('dry', '1');
-      if (phone.trim()) qs.set('phone', phone.trim());
-      // pass token in both query (easy to inspect) and header (server accepts either)
-      qs.set('token', token);
-
-      const res = await fetch(`/api/cron/send-daily?${qs.toString()}`, {
-        headers,
-        cache: 'no-store',
+      const data = await fetchSafeJSON(url, {
+        method: 'GET',
+        headers: token ? { 'x-admin-token': token } : undefined,
       });
-      const json = await res.json();
-      show(json);
-    } catch (e: any) {
-      show({ ok: false, error: e?.message || String(e) });
+      setPretty({ success: true, url, result: data });
+    } catch (err: any) {
+      setPretty({
+        success: false,
+        url,
+        error: err?.message || 'request failed',
+        response: err?.response ?? null,
+      });
     } finally {
       setBusy(false);
     }
   }
 
-  // --------- UI ----------
+  async function runDiag() {
+    setBusy(true);
+    const q = new URLSearchParams();
+    if (token) q.set('token', token);
+    const url = `/api/cron/send-daily?diag=1&${q.toString()}`;
+    try {
+      const data = await fetchSafeJSON(url, {
+        method: 'GET',
+        headers: token ? { 'x-admin-token': token } : undefined,
+      });
+      setPretty({ success: true, url, result: data });
+    } catch (err: any) {
+      setPretty({
+        success: false,
+        url,
+        error: err?.message || 'request failed',
+        response: err?.response ?? null,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <main style={{ padding: 24, maxWidth: 980, margin: '0 auto', fontFamily: 'ui-sans-serif, system-ui' }}>
-      <h1 style={{ margin: 0 }}>Admin</h1>
-      <p style={{ color: '#475569', marginTop: 4 }}>
-        View/export subscribers and trigger the daily sender. Results show below.
+    <main style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
+      <h1 style={{ margin: 0 }}>Admin — Tools</h1>
+      <p style={{ color: '#475569' }}>
+        Force send and dry-run previews. Results show below with raw responses if parsing fails.
       </p>
 
-      <section style={{ marginTop: 16, display: 'grid', gap: 12 }}>
-        {/* Token row */}
-        <div style={{ display: 'grid', gridTemplateColumns: '150px 1fr auto', gap: 8, alignItems: 'center' }}>
-          <label htmlFor="token">Admin token</label>
+      <section
+        style={{
+          display: 'grid',
+          gap: 16,
+          gridTemplateColumns: '1fr',
+          marginTop: 12,
+          marginBottom: 16,
+        }}
+      >
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span style={{ fontSize: 13, color: '#334155' }}>Admin Token</span>
           <input
-            id="token"
-            type="text"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="paste ADMIN_TOKEN here"
-            style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 8 }}
+            placeholder="Your admin token…"
+            style={{
+              padding: '10px 12px',
+              border: '1px solid #cbd5e1',
+              borderRadius: 8,
+              fontFamily: 'inherit',
+            }}
           />
-          <button
-            onClick={saveToken}
-            style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #94a3b8', background: '#e2e8f0' }}
-          >
-            Save
-          </button>
-        </div>
+          <span style={{ fontSize: 12, color: '#64748b' }}>
+            Sent in query (&token=) and header (x-admin-token) so auth is reliable.
+          </span>
+        </label>
 
-        {/* Subscribers controls */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, auto)', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontWeight: 600 }}>Subscribers</span>
-          <label>
-            Limit
-            <input
-              type="number"
-              min={1}
-              max={500}
-              value={limit}
-              onChange={(e) => setLimit(parseInt(e.target.value || '50', 10))}
-              style={{ marginLeft: 6, width: 90, padding: 6, border: '1px solid #cbd5e1', borderRadius: 8 }}
-            />
-          </label>
-          <label>
-            <input type="checkbox" checked={mask} onChange={(e) => setMask(e.target.checked)} /> Mask phones
-          </label>
-          <button
-            onClick={loadSubs}
-            disabled={busy}
-            style={{ padding: '8px 12px', borderRadius: 8, background: '#111827', color: '#fff' }}
-          >
-            Load
-          </button>
-          <button
-            onClick={exportCsv}
-            style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #94a3b8', background: '#e2e8f0' }}
-          >
-            Export CSV (server)
-          </button>
-        </div>
-
-        {/* Force send controls */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontWeight: 600 }}>Force send</span>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span style={{ fontSize: 13, color: '#334155' }}>Phone (optional)</span>
           <input
-            type="text"
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
-            placeholder="optional E.164 phone to target one user"
-            style={{ padding: 8, border: '1px solid #cbd5e1', borderRadius: 8 }}
+            placeholder="+1XXXXXXXXXX"
+            style={{
+              padding: '10px 12px',
+              border: '1px solid #cbd5e1',
+              borderRadius: 8,
+              fontFamily: 'inherit',
+            }}
           />
+          <span style={{ fontSize: 12, color: '#64748b' }}>
+            Leave empty to run for all due subscribers.
+          </span>
+        </label>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button
-            onClick={() => forceSend(true)}
+            onClick={() => runForce(true)}
             disabled={busy}
-            style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #94a3b8', background: '#e2e8f0' }}
+            style={{
+              padding: '10px 14px',
+              borderRadius: 8,
+              border: '1px solid #94a3b8',
+              background: '#f1f5f9',
+              cursor: busy ? 'not-allowed' : 'pointer',
+            }}
           >
-            Dry-run
+            Force (dry-run)
           </button>
           <button
-            onClick={() => forceSend(false)}
+            onClick={() => runForce(false)}
             disabled={busy}
-            style={{ padding: '8px 12px', borderRadius: 8, background: '#047857', color: '#fff' }}
+            style={{
+              padding: '10px 14px',
+              borderRadius: 8,
+              border: '1px solid #059669',
+              background: '#10b981',
+              color: 'white',
+              cursor: busy ? 'not-allowed' : 'pointer',
+            }}
           >
-            Send now
+            Force (send)
+          </button>
+          <button
+            onClick={runDryAll}
+            disabled={busy}
+            style={{
+              padding: '10px 14px',
+              borderRadius: 8,
+              border: '1px solid #3b82f6',
+              background: '#60a5fa',
+              color: 'white',
+              cursor: busy ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Dry-run (all)
+          </button>
+          <button
+            onClick={runDiag}
+            disabled={busy}
+            style={{
+              padding: '10px 14px',
+              borderRadius: 8,
+              border: '1px solid #a855f7',
+              background: '#c084fc',
+              color: 'white',
+              cursor: busy ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Diag
           </button>
         </div>
       </section>
 
-      {/* Console output */}
-      <section style={{ marginTop: 16 }}>
-        <h3 style={{ margin: '8px 0' }}>Console</h3>
+      <section>
         <div
           style={{
-            border: '1px solid #cbd5e1',
-            borderRadius: 8,
-            padding: 12,
-            background: '#0b1020',
-            color: '#e5e7eb',
-            whiteSpace: 'pre-wrap',
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
             fontSize: 13,
-            maxHeight: 420,
-            overflow: 'auto',
+            fontFamily:
+              'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+            whiteSpace: 'pre-wrap',
+            background: '#0b1220',
+            color: '#e5e7eb',
+            padding: 12,
+            borderRadius: 8,
+            minHeight: 220,
+            border: '1px solid #1f2937',
           }}
         >
-          {busy && <div style={{ marginBottom: 8 }}>Loading…</div>}
-          <pre style={{ margin: 0 }}>{JSON.stringify(log ?? { hint: 'Run a command above' }, null, 2)}</pre>
+          {consoleOut}
         </div>
       </section>
-
-      {/* Quick table preview */}
-      {rows && rows.length > 0 && (
-        <section style={{ marginTop: 16 }}>
-          <h3 style={{ margin: '8px 0' }}>Rows ({rows.length})</h3>
-          <div style={{ overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: 8 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-              <thead>
-                <tr>
-                  {Object.keys(rows[0]).slice(0, 12).map((k) => (
-                    <th
-                      key={k}
-                      style={{ textAlign: 'left', padding: '8px 10px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc' }}
-                    >
-                      {k}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                    {Object.keys(rows[0])
-                      .slice(0, 12)
-                      .map((k) => (
-                        <td key={k} style={{ padding: '8px 10px' }}>
-                          {String((r as any)[k] ?? '')}
-                        </td>
-                      ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
     </main>
   );
 }
