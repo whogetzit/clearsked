@@ -42,7 +42,7 @@ export async function POST(req: Request) {
 
   const phone = String(body?.phone ?? "").trim();
   const zip = String(body?.zip ?? "").trim();
-  if (!validatePhone(phone)) return NextResponse.json({ ok: false, error: "invalid_phone" }, { status: 400 });
+  if (phone && !validatePhone(phone)) return NextResponse.json({ ok: false, error: "invalid_phone" }, { status: 400 });
   if (!validateZip(zip)) return NextResponse.json({ ok: false, error: "invalid_zip" }, { status: 400 });
 
   const z = zipcodes.lookup(zip);
@@ -65,8 +65,10 @@ export async function POST(req: Request) {
     deliveryHourLocal: parseIntSafe(body?.prefs?.deliveryHourLocal, 5),
   };
 
+  const phoneE164 = phone || `+temp${Date.now()}${Math.random().toString(36).slice(2, 7)}`;
+
   const upsert = await prisma.subscriber.upsert({
-    where: { phoneE164: phone },
+    where: { phoneE164 },
     update: {
       zip,
       latitude: z.latitude,
@@ -76,7 +78,7 @@ export async function POST(req: Request) {
       prefs,
     },
     create: {
-      phoneE164: phone,
+      phoneE164,
       zip,
       latitude: z.latitude,
       longitude: z.longitude,

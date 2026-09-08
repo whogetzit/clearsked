@@ -15,7 +15,7 @@ model Subscriber {
   updatedAt DateTime @updatedAt
 
   // Identity & status
-  phoneE164 String   @unique          // E.164 phone number, e.g. +13095551234
+  phoneE164 String?  @unique          // E.164 phone number, e.g. +13095551234 (optional)
   active    Boolean  @default(true)   // subscription on/off
 
   // Location & basic prefs
